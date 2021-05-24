@@ -328,13 +328,13 @@ next:
 			d.readMessages == 1 &&
 			d.writeMessages == 2 {
 			// success
-			goto final
+			goto completeWriteFile
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	panic("fail")
 
-final:
+completeWriteFile:
 	dq.Put(msg)
 
 	for i := 0; i < 10; i++ {
@@ -347,6 +347,29 @@ final:
 			d.writePos == 0 &&
 			d.readMessages == 1 &&
 			d.writeMessages == 0 {
+			// success
+			goto completeReadFile
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+completeReadFile:
+	dq.Put(msg)
+
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+
+	for i := 0; i < 10; i++ {
+		// test that read position and messages reset when a file is completely read
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0)
+		if d.depth == 1 &&
+			d.readFileNum == 1 &&
+			d.writeFileNum == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 1004 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 1 {
 			// success
 			goto done
 		}
