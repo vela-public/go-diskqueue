@@ -328,6 +328,26 @@ next:
 			d.readMessages == 1 &&
 			d.writeMessages == 2 {
 			// success
+			goto final
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+final:
+	dq.Put(msg)
+
+	for i := 0; i < 10; i++ {
+		// test that write position and messages reset when a new file is created
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0)
+		if d.depth == 2 &&
+			d.readFileNum == 0 &&
+			d.writeFileNum == 1 &&
+			d.readPos == 1004 &&
+			d.writePos == 0 &&
+			d.readMessages == 1 &&
+			d.writeMessages == 0 {
+			// success
 			goto done
 		}
 		time.Sleep(100 * time.Millisecond)
