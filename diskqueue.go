@@ -19,11 +19,12 @@ import (
 type LogLevel int
 
 const (
-	DEBUG = LogLevel(1)
-	INFO  = LogLevel(2)
-	WARN  = LogLevel(3)
-	ERROR = LogLevel(4)
-	FATAL = LogLevel(5)
+	DEBUG          = LogLevel(1)
+	INFO           = LogLevel(2)
+	WARN           = LogLevel(3)
+	ERROR          = LogLevel(4)
+	FATAL          = LogLevel(5)
+	metaDataFormat = "%d\n%d,%d,%d\n%d,%d,%d\n"
 )
 
 type AppLogFunc func(lvl LogLevel, f string, args ...interface{})
@@ -58,11 +59,13 @@ type diskQueue struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 
 	// run-time state (also persisted to disk)
-	readPos      int64
-	writePos     int64
-	readFileNum  int64
-	writeFileNum int64
-	depth        int64
+	readPos       int64
+	writePos      int64
+	readFileNum   int64
+	writeFileNum  int64
+	readMessages  int64
+	writeMessages int64
+	depth         int64
 
 	sync.RWMutex
 
@@ -300,7 +303,8 @@ func (d *diskQueue) readOne() ([]byte, error) {
 		if d.readFileNum < d.writeFileNum {
 			stat, err := d.readFile.Stat()
 			if err == nil {
-				d.maxBytesPerFileRead = stat.Size()
+				// last 4 bytes are reserved for the number of messages in this file
+				d.maxBytesPerFileRead = stat.Size() - 4
 			}
 		}
 
@@ -394,6 +398,17 @@ func (d *diskQueue) writeOne(data []byte) error {
 		return err
 	}
 
+	totalBytes := int64(4 + dataLen)
+
+	// check if we reached the file size limit with this message
+	if d.writePos+totalBytes >= d.maxBytesPerFile {
+		// write number of messages in binary to file
+		err = binary.Write(&d.writeBuf, binary.BigEndian, dataLen)
+		if err != nil {
+			return err
+		}
+	}
+
 	// only write to the file once
 	_, err = d.writeFile.Write(d.writeBuf.Bytes())
 	if err != nil {
@@ -402,10 +417,11 @@ func (d *diskQueue) writeOne(data []byte) error {
 		return err
 	}
 
-	totalBytes := int64(4 + dataLen)
 	d.writePos += totalBytes
 	d.depth += 1
+	d.writeMessages += 1
 
+	// save space for the number of messages in this file
 	if d.writePos >= d.maxBytesPerFile {
 		if d.readFileNum == d.writeFileNum {
 			d.maxBytesPerFileRead = d.writePos
@@ -413,6 +429,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 		d.writeFileNum++
 		d.writePos = 0
+		d.writeMessages = 0
 
 		// sync every time we start writing to a new file
 		err = d.sync()
@@ -461,15 +478,14 @@ func (d *diskQueue) retrieveMetaData() error {
 	}
 	defer f.Close()
 
-	var depth int64
-	_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
-		&depth,
-		&d.readFileNum, &d.readPos,
-		&d.writeFileNum, &d.writePos)
+	_, err = fmt.Fscanf(f, metaDataFormat,
+		&d.depth,
+		&d.readFileNum, &d.readMessages, &d.readPos,
+		&d.writeFileNum, &d.writeMessages, &d.writePos)
 	if err != nil {
 		return err
 	}
-	d.depth = depth
+
 	d.nextReadFileNum = d.readFileNum
 	d.nextReadPos = d.readPos
 
@@ -490,10 +506,10 @@ func (d *diskQueue) persistMetaData() error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(f, "%d\n%d,%d\n%d,%d\n",
+	_, err = fmt.Fprintf(f, metaDataFormat,
 		d.depth,
-		d.readFileNum, d.readPos,
-		d.writeFileNum, d.writePos)
+		d.readFileNum, d.readMessages, d.readPos,
+		d.writeFileNum, d.writeMessages, d.writePos)
 	if err != nil {
 		f.Close()
 		return err
@@ -558,9 +574,12 @@ func (d *diskQueue) moveForward() {
 	d.readFileNum = d.nextReadFileNum
 	d.readPos = d.nextReadPos
 	d.depth -= 1
+	d.readMessages += 1
 
 	// see if we need to clean up the old file
 	if oldReadFileNum != d.nextReadFileNum {
+		d.readMessages = 0
+
 		// sync every time we start reading from a new file
 		d.needSync = true
 
