@@ -250,11 +250,13 @@ func TestDiskQueueCorruption(t *testing.T) {
 }
 
 type md struct {
-	depth        int64
-	readFileNum  int64
-	writeFileNum int64
-	readPos      int64
-	writePos     int64
+	depth         int64
+	readFileNum   int64
+	writeFileNum  int64
+	readMessages  int64
+	writeMessages int64
+	readPos       int64
+	writePos      int64
 }
 
 func readMetaDataFile(fileName string, retried int) md {
@@ -272,10 +274,10 @@ func readMetaDataFile(fileName string, retried int) md {
 	defer f.Close()
 
 	var ret md
-	_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
+	_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 		&ret.depth,
-		&ret.readFileNum, &ret.readPos,
-		&ret.writeFileNum, &ret.writePos)
+		&ret.readFileNum, &ret.readMessages, &ret.readPos,
+		&ret.writeFileNum, &ret.writeMessages, &ret.writePos)
 	if err != nil {
 		panic(err)
 	}
@@ -302,7 +304,9 @@ func TestDiskQueueSyncAfterRead(t *testing.T) {
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
 			d.readPos == 0 &&
-			d.writePos == 1004 {
+			d.writePos == 1004 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 1 {
 			// success
 			goto next
 		}
@@ -320,7 +324,9 @@ next:
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
 			d.readPos == 1004 &&
-			d.writePos == 2008 {
+			d.writePos == 2008 &&
+			d.readMessages == 1 &&
+			d.writeMessages == 2 {
 			// success
 			goto done
 		}
