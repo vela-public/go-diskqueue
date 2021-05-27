@@ -262,13 +262,16 @@ func (d *diskQueue) skipToNextRWFile() error {
 		}
 	}
 
-	d.writeFileNum++
-	d.writePos = 0
-	d.readFileNum = d.writeFileNum
-	d.readPos = 0
-	d.nextReadFileNum = d.writeFileNum
-	d.nextReadPos = 0
 	d.depth = 0
+	d.nextReadPos = 0
+	d.readMessages = 0
+	d.readPos = 0
+	d.writeFileNum++
+	d.writeMessages = 0
+	d.writePos = 0
+
+	d.readFileNum = d.writeFileNum
+	d.nextReadFileNum = d.writeFileNum
 
 	return err
 }
@@ -304,7 +307,7 @@ func (d *diskQueue) readOne() ([]byte, error) {
 			stat, err := d.readFile.Stat()
 			if err == nil {
 				// last 4 bytes are reserved for the number of messages in this file
-				d.maxBytesPerFileRead = stat.Size() - 4
+				d.maxBytesPerFileRead = stat.Size() - 8
 			}
 		}
 
@@ -401,9 +404,9 @@ func (d *diskQueue) writeOne(data []byte) error {
 	totalBytes := int64(4 + dataLen)
 
 	// check if we reached the file size limit with this message
-	if d.writePos+totalBytes >= d.maxBytesPerFile {
+	if d.writePos+totalBytes+8 >= d.maxBytesPerFile {
 		// write number of messages in binary to file
-		err = binary.Write(&d.writeBuf, binary.BigEndian, dataLen)
+		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages)
 		if err != nil {
 			return err
 		}
@@ -419,10 +422,9 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 	d.writePos += totalBytes
 	d.depth += 1
-	d.writeMessages += 1
 
 	// save space for the number of messages in this file
-	if d.writePos >= d.maxBytesPerFile {
+	if d.writePos+8 >= d.maxBytesPerFile {
 		if d.readFileNum == d.writeFileNum {
 			d.maxBytesPerFileRead = d.writePos
 		}
@@ -441,6 +443,8 @@ func (d *diskQueue) writeOne(data []byte) error {
 			d.writeFile.Close()
 			d.writeFile = nil
 		}
+	} else {
+		d.writeMessages += 1
 	}
 
 	return err
