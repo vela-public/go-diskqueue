@@ -259,7 +259,7 @@ type md struct {
 	writePos      int64
 }
 
-func readMetaDataFile(fileName string, retried int) md {
+func readMetaDataFile(fileName string, retried int, withDiskSpaceImpl bool) md {
 	f, err := os.OpenFile(fileName, os.O_RDONLY, 0600)
 	if err != nil {
 		// provide a simple retry that results in up to
@@ -267,17 +267,24 @@ func readMetaDataFile(fileName string, retried int) md {
 		if retried < 9 {
 			retried++
 			time.Sleep(50 * time.Millisecond)
-			return readMetaDataFile(fileName, retried)
+			return readMetaDataFile(fileName, retried, withDiskSpaceImpl)
 		}
 		panic(err)
 	}
 	defer f.Close()
 
 	var ret md
-	_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
-		&ret.depth,
-		&ret.readFileNum, &ret.readMessages, &ret.readPos,
-		&ret.writeFileNum, &ret.writeMessages, &ret.writePos)
+	if withDiskSpaceImpl {
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+			&ret.depth,
+			&ret.readFileNum, &ret.readMessages, &ret.readPos,
+			&ret.writeFileNum, &ret.writeMessages, &ret.writePos)
+	} else {
+		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
+			&ret.depth,
+			&ret.readFileNum, &ret.readPos,
+			&ret.writeFileNum, &ret.writePos)
+	}
 	if err != nil {
 		panic(err)
 	}
@@ -292,6 +299,55 @@ func TestDiskQueueSyncAfterRead(t *testing.T) {
 		panic(err)
 	}
 	defer os.RemoveAll(tmpDir)
+	dq := New(dqName, tmpDir, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	defer dq.Close()
+
+	msg := make([]byte, 1000)
+	dq.Put(msg)
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, false)
+		if d.depth == 1 &&
+			d.readFileNum == 0 &&
+			d.writeFileNum == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 1004 {
+			// success
+			goto next
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+next:
+	dq.Put(msg)
+	<-dq.ReadChan()
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, false)
+		if d.depth == 1 &&
+			d.readFileNum == 0 &&
+			d.writeFileNum == 0 &&
+			d.readPos == 1004 &&
+			d.writePos == 2008 {
+			// success
+			goto done
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+done:
+}
+
+func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
+	l := NewTestLogger(t)
+	dqName := "test_disk_queue_read_after_sync" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
 	dq := NewWithDiskSpace(dqName, tmpDir, 1<<11, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
@@ -299,7 +355,7 @@ func TestDiskQueueSyncAfterRead(t *testing.T) {
 	dq.Put(msg)
 
 	for i := 0; i < 10; i++ {
-		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0)
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
@@ -319,7 +375,7 @@ next:
 	<-dq.ReadChan()
 
 	for i := 0; i < 10; i++ {
-		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0)
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
@@ -339,7 +395,7 @@ completeWriteFile:
 
 	for i := 0; i < 10; i++ {
 		// test that write position and messages reset when a new file is created
-		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0)
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 2 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 1 &&
@@ -362,7 +418,7 @@ completeReadFile:
 
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
-		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0)
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 1 &&
