@@ -118,6 +118,7 @@ func New(name string, dataPath string, maxBytesPerFile int64,
 		syncEvery, syncTimeout, logf)
 }
 
+// Another constructor that allows users to use Disk Space Limit feature
 func NewWithDiskSpace(name string, dataPath string,
 	maxBytesDiskSpace int64, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32,
@@ -149,6 +150,7 @@ func NewWithDiskSpace(name string, dataPath string,
 	return &d
 }
 
+// Get the last known state of DiskQueue from metadata and start ioLoop
 func (d *diskQueue) start() {
 	// no need to lock here, nothing else could possibly be touching this instance
 	err := d.retrieveMetaData()
