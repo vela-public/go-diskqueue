@@ -306,7 +306,7 @@ func (d *diskQueue) readOne() ([]byte, error) {
 		if d.readFileNum < d.writeFileNum {
 			stat, err := d.readFile.Stat()
 			if err == nil {
-				// last 4 bytes are reserved for the number of messages in this file
+				// last 8 bytes are reserved for the number of messages in this file
 				d.maxBytesPerFileRead = stat.Size() - 8
 			}
 		}
