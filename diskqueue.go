@@ -281,16 +281,15 @@ func (d *diskQueue) skipToNextRWFile() error {
 		}
 	}
 
-	d.depth = 0
-	d.nextReadPos = 0
-	d.readMessages = 0
-	d.readPos = 0
 	d.writeFileNum++
-	d.writeMessages = 0
 	d.writePos = 0
-
 	d.readFileNum = d.writeFileNum
+	d.readPos = 0
 	d.nextReadFileNum = d.writeFileNum
+	d.nextReadPos = 0
+	d.depth = 0
+	d.readMessages = 0
+	d.writeMessages = 0
 
 	return err
 }
