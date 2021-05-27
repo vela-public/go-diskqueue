@@ -19,12 +19,11 @@ import (
 type LogLevel int
 
 const (
-	DEBUG          = LogLevel(1)
-	INFO           = LogLevel(2)
-	WARN           = LogLevel(3)
-	ERROR          = LogLevel(4)
-	FATAL          = LogLevel(5)
-	metaDataFormat = "%d\n%d,%d,%d\n%d,%d,%d\n"
+	DEBUG = LogLevel(1)
+	INFO  = LogLevel(2)
+	WARN  = LogLevel(3)
+	ERROR = LogLevel(4)
+	FATAL = LogLevel(5)
 )
 
 type AppLogFunc func(lvl LogLevel, f string, args ...interface{})
@@ -72,6 +71,7 @@ type diskQueue struct {
 	// instantiation time metadata
 	name                string
 	dataPath            string
+	maxBytesDiskSpace   int64
 	maxBytesPerFile     int64 // cannot change once created
 	maxBytesPerFileRead int64
 	minMsgSize          int32
@@ -111,9 +111,24 @@ type diskQueue struct {
 func New(name string, dataPath string, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32,
 	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
+
+	return NewWithDiskSpace(name, dataPath,
+		0, maxBytesPerFile,
+		minMsgSize, maxMsgSize,
+		syncEvery, syncTimeout, logf)
+}
+
+func NewWithDiskSpace(name string, dataPath string,
+	maxBytesDiskSpace int64, maxBytesPerFile int64,
+	minMsgSize int32, maxMsgSize int32,
+	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
+	if maxBytesDiskSpace <= 0 {
+		maxBytesDiskSpace = 0
+	}
 	d := diskQueue{
 		name:              name,
 		dataPath:          dataPath,
+		maxBytesDiskSpace: maxBytesDiskSpace,
 		maxBytesPerFile:   maxBytesPerFile,
 		minMsgSize:        minMsgSize,
 		maxMsgSize:        maxMsgSize,
@@ -130,6 +145,11 @@ func New(name string, dataPath string, maxBytesPerFile int64,
 		logf:              logf,
 	}
 
+	d.start()
+	return &d
+}
+
+func (d *diskQueue) start() {
 	// no need to lock here, nothing else could possibly be touching this instance
 	err := d.retrieveMetaData()
 	if err != nil && !os.IsNotExist(err) {
@@ -137,7 +157,6 @@ func New(name string, dataPath string, maxBytesPerFile int64,
 	}
 
 	go d.ioLoop()
-	return &d
 }
 
 // Depth returns the depth of the queue
@@ -306,8 +325,11 @@ func (d *diskQueue) readOne() ([]byte, error) {
 		if d.readFileNum < d.writeFileNum {
 			stat, err := d.readFile.Stat()
 			if err == nil {
-				// last 8 bytes are reserved for the number of messages in this file
-				d.maxBytesPerFileRead = stat.Size() - 8
+				d.maxBytesPerFileRead = stat.Size()
+				if d.maxBytesDiskSpace > 0 {
+					// last 8 bytes are reserved for the number of messages in this file
+					d.maxBytesPerFileRead -= 8
+				}
 			}
 		}
 
@@ -404,7 +426,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	totalBytes := int64(4 + dataLen)
 
 	// check if we reached the file size limit with this message
-	if d.writePos+totalBytes+8 >= d.maxBytesPerFile {
+	if d.maxBytesDiskSpace > 0 && d.writePos+totalBytes+8 >= d.maxBytesPerFile {
 		// write number of messages in binary to file
 		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages)
 		if err != nil {
@@ -423,8 +445,13 @@ func (d *diskQueue) writeOne(data []byte) error {
 	d.writePos += totalBytes
 	d.depth += 1
 
-	// save space for the number of messages in this file
-	if d.writePos+8 >= d.maxBytesPerFile {
+	fileSize := d.writePos
+
+	if d.maxBytesDiskSpace > 0 {
+		// save space for the number of messages in this file
+		fileSize += 8
+	}
+	if fileSize >= d.maxBytesPerFile {
 		if d.readFileNum == d.writeFileNum {
 			d.maxBytesPerFileRead = d.writePos
 		}
@@ -482,10 +509,18 @@ func (d *diskQueue) retrieveMetaData() error {
 	}
 	defer f.Close()
 
-	_, err = fmt.Fscanf(f, metaDataFormat,
-		&d.depth,
-		&d.readFileNum, &d.readMessages, &d.readPos,
-		&d.writeFileNum, &d.writeMessages, &d.writePos)
+	if d.maxBytesDiskSpace > 0 {
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+			&d.depth,
+			&d.readFileNum, &d.readMessages, &d.readPos,
+			&d.writeFileNum, &d.writeMessages, &d.writePos)
+	} else {
+		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
+			&d.depth,
+			&d.readFileNum, &d.readPos,
+			&d.writeFileNum, &d.writePos)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -510,10 +545,17 @@ func (d *diskQueue) persistMetaData() error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(f, metaDataFormat,
-		d.depth,
-		d.readFileNum, d.readMessages, d.readPos,
-		d.writeFileNum, d.writeMessages, d.writePos)
+	if d.maxBytesDiskSpace > 0 {
+		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+			d.depth,
+			d.readFileNum, d.readMessages, d.readPos,
+			d.writeFileNum, d.writeMessages, d.writePos)
+	} else {
+		_, err = fmt.Fprintf(f, "%d\n%d,%d\n%d,%d\n",
+			d.depth,
+			d.readFileNum, d.readPos,
+			d.writeFileNum, d.writePos)
+	}
 	if err != nil {
 		f.Close()
 		return err
