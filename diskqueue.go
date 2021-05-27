@@ -119,6 +119,8 @@ func New(name string, dataPath string, maxBytesPerFile int64,
 }
 
 // Another constructor that allows users to use Disk Space Limit feature
+// If user is not using Disk Space Limit feature, maxBytesDiskSpace will
+// be 0
 func NewWithDiskSpace(name string, dataPath string,
 	maxBytesDiskSpace int64, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32,
@@ -510,6 +512,7 @@ func (d *diskQueue) retrieveMetaData() error {
 	}
 	defer f.Close()
 
+	// if user is using disk space limit feature
 	if d.maxBytesDiskSpace > 0 {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			&d.depth,
@@ -546,6 +549,7 @@ func (d *diskQueue) persistMetaData() error {
 		return err
 	}
 
+	// if user is using disk space limit feature
 	if d.maxBytesDiskSpace > 0 {
 		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			d.depth,
