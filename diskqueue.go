@@ -104,6 +104,9 @@ type diskQueue struct {
 	exitSyncChan      chan int
 
 	logf AppLogFunc
+
+	// disk limit implementation flag
+	diskLimitFeatIsOn bool
 }
 
 // New instantiates an instance of diskQueue, retrieving metadata
@@ -125,8 +128,10 @@ func NewWithDiskSpace(name string, dataPath string,
 	maxBytesDiskSpace int64, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32,
 	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
+	diskLimitFeatIsOn := true
 	if maxBytesDiskSpace <= 0 {
 		maxBytesDiskSpace = 0
+		diskLimitFeatIsOn = false
 	}
 	d := diskQueue{
 		name:              name,
@@ -146,6 +151,7 @@ func NewWithDiskSpace(name string, dataPath string,
 		syncEvery:         syncEvery,
 		syncTimeout:       syncTimeout,
 		logf:              logf,
+		diskLimitFeatIsOn: diskLimitFeatIsOn,
 	}
 
 	d.start()
@@ -329,7 +335,7 @@ func (d *diskQueue) readOne() ([]byte, error) {
 			stat, err := d.readFile.Stat()
 			if err == nil {
 				d.maxBytesPerFileRead = stat.Size()
-				if d.maxBytesDiskSpace > 0 {
+				if d.diskLimitFeatIsOn {
 					// last 8 bytes are reserved for the number of messages in this file
 					d.maxBytesPerFileRead -= 8
 				}
@@ -429,7 +435,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	totalBytes := int64(4 + dataLen)
 
 	// check if we reached the file size limit with this message
-	if d.maxBytesDiskSpace > 0 && d.writePos+totalBytes+8 >= d.maxBytesPerFile {
+	if d.diskLimitFeatIsOn && d.writePos+totalBytes+8 >= d.maxBytesPerFile {
 		// write number of messages in binary to file
 		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages)
 		if err != nil {
@@ -450,7 +456,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 	fileSize := d.writePos
 
-	if d.maxBytesDiskSpace > 0 {
+	if d.diskLimitFeatIsOn {
 		// save space for the number of messages in this file
 		fileSize += 8
 	}
@@ -513,7 +519,7 @@ func (d *diskQueue) retrieveMetaData() error {
 	defer f.Close()
 
 	// if user is using disk space limit feature
-	if d.maxBytesDiskSpace > 0 {
+	if d.diskLimitFeatIsOn {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			&d.depth,
 			&d.readFileNum, &d.readMessages, &d.readPos,
@@ -550,7 +556,7 @@ func (d *diskQueue) persistMetaData() error {
 	}
 
 	// if user is using disk space limit feature
-	if d.maxBytesDiskSpace > 0 {
+	if d.diskLimitFeatIsOn {
 		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			d.depth,
 			d.readFileNum, d.readMessages, d.readPos,
