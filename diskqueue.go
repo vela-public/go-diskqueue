@@ -441,8 +441,6 @@ func (d *diskQueue) writeOne(data []byte) error {
 		if err != nil {
 			return err
 		}
-
-		totalBytes += 8
 	}
 
 	// only write to the file once
