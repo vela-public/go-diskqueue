@@ -460,6 +460,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 		// save space for the number of messages in this file
 		fileSize += 8
 	}
+
 	if fileSize >= d.maxBytesPerFile {
 		if d.readFileNum == d.writeFileNum {
 			d.maxBytesPerFileRead = d.writePos
