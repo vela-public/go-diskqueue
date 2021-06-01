@@ -251,6 +251,7 @@ func TestDiskQueueCorruption(t *testing.T) {
 
 type md struct {
 	depth         int64
+	writeBytes    int64
 	readFileNum   int64
 	writeFileNum  int64
 	readMessages  int64
@@ -275,10 +276,10 @@ func readMetaDataFile(fileName string, retried int, withDiskSpaceFeat bool) md {
 
 	var ret md
 	if withDiskSpaceFeat {
-		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			&ret.depth,
 			&ret.readFileNum, &ret.readMessages, &ret.readPos,
-			&ret.writeFileNum, &ret.writeMessages, &ret.writePos)
+			&ret.writeBytes, &ret.writeFileNum, &ret.writeMessages, &ret.writePos)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
 			&ret.depth,
@@ -357,6 +358,7 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
+			d.writeBytes == 1004 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
 			d.readPos == 0 &&
@@ -377,6 +379,7 @@ next:
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
+			d.writeBytes == 2008 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
 			d.readPos == 1004 &&
@@ -397,6 +400,7 @@ completeWriteFile:
 		// test that write position and messages reset when a new file is created
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 2 &&
+			d.writeBytes == 3020 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 1 &&
 			d.readPos == 1004 &&
@@ -419,7 +423,9 @@ completeReadFile:
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		t.Logf("Write bytes: %d", d.writeBytes)
 		if d.depth == 1 &&
+			d.writeBytes == 1004 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 1 &&
 			d.readPos == 0 &&
