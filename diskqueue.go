@@ -64,7 +64,6 @@ type diskQueue struct {
 	writeFileNum  int64
 	readMessages  int64
 	writeMessages int64
-	writeBytes    int64
 	depth         int64
 
 	sync.RWMutex
@@ -108,9 +107,6 @@ type diskQueue struct {
 
 	// disk limit implementation flag
 	diskLimitFeatIsOn bool
-
-	// the size of the
-	readMsgSize int32
 }
 
 // New instantiates an instance of diskQueue, retrieving metadata
@@ -304,7 +300,6 @@ func (d *diskQueue) skipToNextRWFile() error {
 	d.depth = 0
 	d.readMessages = 0
 	d.writeMessages = 0
-	d.writeBytes = 0
 
 	return err
 }
@@ -313,6 +308,7 @@ func (d *diskQueue) skipToNextRWFile() error {
 // while advancing read positions and rolling files, if necessary
 func (d *diskQueue) readOne() ([]byte, error) {
 	var err error
+	var msgSize int32
 
 	if d.readFile == nil {
 		curFileName := d.fileName(d.readFileNum)
@@ -349,22 +345,22 @@ func (d *diskQueue) readOne() ([]byte, error) {
 		d.reader = bufio.NewReader(d.readFile)
 	}
 
-	err = binary.Read(d.reader, binary.BigEndian, &d.readMsgSize)
+	err = binary.Read(d.reader, binary.BigEndian, &msgSize)
 	if err != nil {
 		d.readFile.Close()
 		d.readFile = nil
 		return nil, err
 	}
 
-	if d.readMsgSize < d.minMsgSize || d.readMsgSize > d.maxMsgSize {
+	if msgSize < d.minMsgSize || msgSize > d.maxMsgSize {
 		// this file is corrupt and we have no reasonable guarantee on
 		// where a new message should begin
 		d.readFile.Close()
 		d.readFile = nil
-		return nil, fmt.Errorf("invalid message read size (%d)", d.readMsgSize)
+		return nil, fmt.Errorf("invalid message read size (%d)", msgSize)
 	}
 
-	readBuf := make([]byte, d.readMsgSize)
+	readBuf := make([]byte, msgSize)
 	_, err = io.ReadFull(d.reader, readBuf)
 	if err != nil {
 		d.readFile.Close()
@@ -372,7 +368,7 @@ func (d *diskQueue) readOne() ([]byte, error) {
 		return nil, err
 	}
 
-	totalBytes := int64(4 + d.readMsgSize)
+	totalBytes := int64(4 + msgSize)
 
 	// we only advance next* because we have not yet sent this to consumers
 	// (where readFileNum, readPos will actually be advanced)
@@ -465,7 +461,6 @@ func (d *diskQueue) writeOne(data []byte) error {
 	if d.diskLimitFeatIsOn {
 		// save space for the number of messages in this file
 		fileSize += 8
-		d.writeBytes += totalBytes
 		d.writeMessages += 1
 	}
 
@@ -476,12 +471,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 		d.writeFileNum++
 		d.writePos = 0
-
-		if d.diskLimitFeatIsOn {
-			// add bytes for the number of messages in the file
-			d.writeBytes += 8
-			d.writeMessages = 0
-		}
+		d.writeMessages = 0
 
 		// sync every time we start writing to a new file
 		err = d.sync()
@@ -532,10 +522,10 @@ func (d *diskQueue) retrieveMetaData() error {
 
 	// if user is using disk space limit feature
 	if d.diskLimitFeatIsOn {
-		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			&d.depth,
 			&d.readFileNum, &d.readMessages, &d.readPos,
-			&d.writeBytes, &d.writeFileNum, &d.writeMessages, &d.writePos)
+			&d.writeFileNum, &d.writeMessages, &d.writePos)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
 			&d.depth,
@@ -569,10 +559,10 @@ func (d *diskQueue) persistMetaData() error {
 
 	// if user is using disk space limit feature
 	if d.diskLimitFeatIsOn {
-		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
+		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			d.depth,
 			d.readFileNum, d.readMessages, d.readPos,
-			d.writeBytes, d.writeFileNum, d.writeMessages, d.writePos)
+			d.writeFileNum, d.writeMessages, d.writePos)
 	} else {
 		_, err = fmt.Fprintf(f, "%d\n%d,%d\n%d,%d\n",
 			d.depth,
@@ -639,8 +629,6 @@ func (d *diskQueue) checkTailCorruption(depth int64) {
 }
 
 func (d *diskQueue) moveForward() {
-	// add bytes for the number of messages and the size of the message
-	readFileLen := int64(d.readMsgSize) + d.readPos + 12
 	oldReadFileNum := d.readFileNum
 	d.readFileNum = d.nextReadFileNum
 	d.readPos = d.nextReadPos
@@ -659,8 +647,6 @@ func (d *diskQueue) moveForward() {
 		if err != nil {
 			d.logf(ERROR, "DISKQUEUE(%s) failed to Remove(%s) - %s", d.name, fn, err)
 		}
-
-		d.writeBytes -= readFileLen
 	}
 
 	d.checkTailCorruption(d.depth)
