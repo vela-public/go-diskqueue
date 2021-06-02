@@ -259,7 +259,7 @@ type md struct {
 	writePos      int64
 }
 
-func readMetaDataFile(fileName string, retried int, enableDiskLimitation bool) md {
+func readMetaDataFile(fileName string, retried int, diskLimitFeatIsOn bool) md {
 	f, err := os.OpenFile(fileName, os.O_RDONLY, 0600)
 	if err != nil {
 		// provide a simple retry that results in up to
@@ -267,14 +267,14 @@ func readMetaDataFile(fileName string, retried int, enableDiskLimitation bool) m
 		if retried < 9 {
 			retried++
 			time.Sleep(50 * time.Millisecond)
-			return readMetaDataFile(fileName, retried, enableDiskLimitation)
+			return readMetaDataFile(fileName, retried, diskLimitFeatIsOn)
 		}
 		panic(err)
 	}
 	defer f.Close()
 
 	var ret md
-	if enableDiskLimitation {
+	if diskLimitFeatIsOn {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			&ret.depth,
 			&ret.readFileNum, &ret.readMessages, &ret.readPos,
@@ -348,7 +348,7 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 		panic(err)
 	}
 	defer os.RemoveAll(tmpDir)
-	dq := NewWithDiskSize(dqName, tmpDir, 1<<11, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	dq := NewWithDiskSpace(dqName, tmpDir, 1<<11, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
 	msgSize := 1000
