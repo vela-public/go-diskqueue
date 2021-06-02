@@ -87,6 +87,10 @@ type diskQueue struct {
 	nextReadPos     int64
 	nextReadFileNum int64
 
+	// keep track of the msg size we have read
+	// (but not yet sent over readChan)
+	readMsgSize int32
+
 	readFile  *os.File
 	writeFile *os.File
 	reader    *bufio.Reader
@@ -108,9 +112,6 @@ type diskQueue struct {
 
 	// disk limit implementation flag
 	diskLimitFeatIsOn bool
-
-	// the size of the
-	readMsgSize int32
 }
 
 // New instantiates an instance of diskQueue, retrieving metadata
