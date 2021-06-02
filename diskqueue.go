@@ -425,6 +425,8 @@ func (d *diskQueue) writeOne(data []byte) error {
 		return fmt.Errorf("invalid message write size (%d) minMsgSize=%d maxMsgSize=%d", dataLen, d.minMsgSize, d.maxMsgSize)
 	}
 
+	// add all data to writeBuf before writing to file
+	// this causes everything to be written to file or nothing
 	d.writeBuf.Reset()
 	err = binary.Write(&d.writeBuf, binary.BigEndian, dataLen)
 	if err != nil {
@@ -441,7 +443,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	// check if we reached the file size limit with this message
 	if d.diskLimitFeatIsOn && d.writePos+totalBytes+8 >= d.maxBytesPerFile {
 		// write number of messages in binary to file
-		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages)
+		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages+1)
 		if err != nil {
 			return err
 		}
