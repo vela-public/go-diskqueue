@@ -351,7 +351,8 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 	dq := NewWithDiskSpace(dqName, tmpDir, 1<<11, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
-	msg := make([]byte, 1000)
+	msgSize := 1000
+	msg := make([]byte, msgSize)
 	dq.Put(msg)
 
 	for i := 0; i < 10; i++ {
@@ -391,12 +392,17 @@ next:
 	panic("fail")
 
 completeWriteFile:
-	dq.Put(msg)
+	// meet the file size limit exactly (2048 bytes)
+	totalBytes := 2 * (msgSize + 4)
+	bytesRemaining := 2048 - (totalBytes + 8)
+	oneByteMsgSizeIncrease := 5
+	dq.Put(make([]byte, bytesRemaining-4-oneByteMsgSizeIncrease))
+	dq.Put(make([]byte, 1))
 
 	for i := 0; i < 10; i++ {
 		// test that write position and messages reset when a new file is created
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
-		if d.depth == 2 &&
+		if d.depth == 3 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 1 &&
 			d.readPos == 1004 &&
@@ -415,10 +421,12 @@ completeReadFile:
 
 	<-dq.ReadChan()
 	<-dq.ReadChan()
+	<-dq.ReadChan()
 
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		t.Log(d.depth, d.readFileNum, d.writeFileNum, d.readPos, d.writePos, d.readMessages, d.writeMessages)
 		if d.depth == 1 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 1 &&
