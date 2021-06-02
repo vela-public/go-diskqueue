@@ -392,7 +392,8 @@ next:
 	panic("fail")
 
 completeWriteFile:
-	// meet the file size limit exactly (2048 bytes)
+	// meet the file size limit exactly (2048 bytes) when writeFileNum
+	// equals readFileNum
 	totalBytes := 2 * (msgSize + 4)
 	bytesRemaining := 2048 - (totalBytes + 8)
 	oneByteMsgSizeIncrease := 5
@@ -401,6 +402,7 @@ completeWriteFile:
 
 	for i := 0; i < 10; i++ {
 		// test that write position and messages reset when a new file is created
+		// test the writeFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 3 &&
 			d.readFileNum == 0 &&
@@ -425,8 +427,8 @@ completeReadFile:
 
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
+		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
-		t.Log(d.depth, d.readFileNum, d.writeFileNum, d.readPos, d.writePos, d.readMessages, d.writeMessages)
 		if d.depth == 1 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 1 &&
@@ -434,6 +436,64 @@ completeReadFile:
 			d.writePos == 1004 &&
 			d.readMessages == 0 &&
 			d.writeMessages == 1 {
+			// success
+			goto completeWriteFileAgain
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+completeWriteFileAgain:
+	// make writeFileNum ahead of readFileNum
+	dq.Put(msg)
+	dq.Put(msg)
+
+	// meet the file size limit exactly (2048 bytes) when writeFileNum
+	// is ahead of readFileNum
+	dq.Put(msg)
+	dq.Put(msg)
+	dq.Put(make([]byte, bytesRemaining-4-oneByteMsgSizeIncrease))
+	dq.Put(make([]byte, 1))
+
+	for i := 0; i < 10; i++ {
+		// test that write position and messages reset when a file is completely read
+		// test the writeFileNum correctly increments
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 7 &&
+			d.readFileNum == 1 &&
+			d.writeFileNum == 3 &&
+			d.readPos == 0 &&
+			d.writePos == 0 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 {
+			// success
+			goto completeReadFileAgain
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+completeReadFileAgain:
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+
+	for i := 0; i < 10; i++ {
+		// test that read position and messages reset when a file is completely read
+		// test the readFileNum correctly increments
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 0 &&
+			d.readFileNum == 3 &&
+			d.writeFileNum == 3 &&
+			d.readPos == 0 &&
+			d.writePos == 0 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 {
 			// success
 			goto done
 		}
