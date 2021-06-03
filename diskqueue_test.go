@@ -350,7 +350,7 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 		panic(err)
 	}
 	defer os.RemoveAll(tmpDir)
-	dq := NewWithDiskSpace(dqName, tmpDir, 1<<11, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	dq := NewWithDiskSpace(dqName, tmpDir, 6000, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
 	msgSize := 1000

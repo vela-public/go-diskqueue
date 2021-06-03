@@ -399,6 +399,31 @@ func (d *diskQueue) readOne() ([]byte, error) {
 	return readBuf, nil
 }
 
+func (d *diskQueue) metaDataFileSize() int64 {
+	var err error
+	var metaDataFile *os.File
+
+	// get the MetaData file size
+	metaDataFile, err = os.OpenFile(d.metaDataFileName(), os.O_RDONLY, 0600)
+
+	var metaDataFileSize int64
+	if err == nil {
+		var stat os.FileInfo
+
+		stat, err = metaDataFile.Stat()
+		if err == nil {
+			metaDataFileSize = stat.Size()
+		} 
+	}
+	if err != nil {
+		// use max file size (8 int64 fields)
+		metaDataFileSize = 64
+		err = nil
+	}
+
+	return metaDataFileSize
+}
+
 // writeOne performs a low level filesystem write for a single []byte
 // while advancing write positions and rolling files, if necessary
 func (d *diskQueue) writeOne(data []byte) error {
@@ -427,6 +452,11 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 	if dataLen < d.minMsgSize || dataLen > d.maxMsgSize {
 		return fmt.Errorf("invalid message write size (%d) minMsgSize=%d maxMsgSize=%d", dataLen, d.minMsgSize, d.maxMsgSize)
+	}
+
+	// check if we have enough space to write this message
+	if d.diskLimitFeatIsOn {
+		var metaDataFileSize := d.metaDataFileSize()
 	}
 
 	// add all data to writeBuf before writing to file
