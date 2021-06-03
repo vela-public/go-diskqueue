@@ -649,11 +649,13 @@ func (d *diskQueue) moveForward() {
 	d.readFileNum = d.nextReadFileNum
 	d.readPos = d.nextReadPos
 	d.depth -= 1
-	d.readMessages += 1
+
+	if d.diskLimitFeatIsOn {
+		d.readMessages += 1
+	}
 
 	// see if we need to clean up the old file
 	if oldReadFileNum != d.nextReadFileNum {
-		d.readMessages = 0
 
 		// sync every time we start reading from a new file
 		d.needSync = true
@@ -664,7 +666,10 @@ func (d *diskQueue) moveForward() {
 			d.logf(ERROR, "DISKQUEUE(%s) failed to Remove(%s) - %s", d.name, fn, err)
 		}
 
-		d.writeBytes -= readFileLen
+		if d.diskLimitFeatIsOn {
+			d.readMessages = 0
+			d.writeBytes -= readFileLen
+		}
 	}
 
 	d.checkTailCorruption(d.depth)
