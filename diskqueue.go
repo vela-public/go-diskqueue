@@ -19,11 +19,12 @@ import (
 type LogLevel int
 
 const (
-	DEBUG = LogLevel(1)
-	INFO  = LogLevel(2)
-	WARN  = LogLevel(3)
-	ERROR = LogLevel(4)
-	FATAL = LogLevel(5)
+	DEBUG            = LogLevel(1)
+	INFO             = LogLevel(2)
+	WARN             = LogLevel(3)
+	ERROR            = LogLevel(4)
+	FATAL            = LogLevel(5)
+	numFileMsgsBytes = 8
 )
 
 type AppLogFunc func(lvl LogLevel, f string, args ...interface{})
@@ -337,7 +338,7 @@ func (d *diskQueue) readOne() ([]byte, error) {
 				d.maxBytesPerFileRead = stat.Size()
 				if d.enableDiskLimitation {
 					// last 8 bytes are reserved for the number of messages in this file
-					d.maxBytesPerFileRead -= 8
+					d.maxBytesPerFileRead -= numFileMsgsBytes
 				}
 			}
 		}
@@ -437,7 +438,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	totalBytes := int64(4 + dataLen)
 
 	// check if we reached the file size limit with this message
-	if d.enableDiskLimitation && d.writePos+totalBytes+8 >= d.maxBytesPerFile {
+	if d.enableDiskLimitation && d.writePos+totalBytes+numFileMsgsBytes >= d.maxBytesPerFile {
 		// write number of messages in binary to file
 		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages+1)
 		if err != nil {
@@ -460,7 +461,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 	if d.enableDiskLimitation {
 		// save space for the number of messages in this file
-		fileSize += 8
+		fileSize += numFileMsgsBytes
 		d.writeMessages += 1
 	}
 
