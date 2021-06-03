@@ -399,11 +399,11 @@ func (d *diskQueue) readOne() ([]byte, error) {
 	return readBuf, nil
 }
 
+// get the size of the metaData file or its max possible size
 func (d *diskQueue) metaDataFileSize() int64 {
 	var err error
 	var metaDataFile *os.File
 
-	// get the MetaData file size
 	metaDataFile, err = os.OpenFile(d.metaDataFileName(), os.O_RDONLY, 0600)
 
 	var metaDataFileSize int64
