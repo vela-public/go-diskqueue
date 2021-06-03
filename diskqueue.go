@@ -19,11 +19,12 @@ import (
 type LogLevel int
 
 const (
-	DEBUG = LogLevel(1)
-	INFO  = LogLevel(2)
-	WARN  = LogLevel(3)
-	ERROR = LogLevel(4)
-	FATAL = LogLevel(5)
+	DEBUG           = LogLevel(1)
+	INFO            = LogLevel(2)
+	WARN            = LogLevel(3)
+	ERROR           = LogLevel(4)
+	FATAL           = LogLevel(5)
+	numFileMsgBytes = 8
 )
 
 type AppLogFunc func(lvl LogLevel, f string, args ...interface{})
@@ -345,7 +346,7 @@ func (d *diskQueue) readOne() ([]byte, error) {
 				d.maxBytesPerFileRead = stat.Size()
 				if d.diskLimitFeatIsOn {
 					// last 8 bytes are reserved for the number of messages in this file
-					d.maxBytesPerFileRead -= 8
+					d.maxBytesPerFileRead -= numFileMsgBytes
 				}
 			}
 		}
@@ -413,12 +414,11 @@ func (d *diskQueue) metaDataFileSize() int64 {
 		stat, err = metaDataFile.Stat()
 		if err == nil {
 			metaDataFileSize = stat.Size()
-		} 
+		}
 	}
 	if err != nil {
 		// use max file size (8 int64 fields)
 		metaDataFileSize = 64
-		err = nil
 	}
 
 	return metaDataFileSize
@@ -455,8 +455,61 @@ func (d *diskQueue) writeOne(data []byte) error {
 	}
 
 	// check if we have enough space to write this message
-	if d.diskLimitFeatIsOn {
-		var metaDataFileSize := d.metaDataFileSize()
+	if d.diskLimitFeatIsOn && d.writeBytes+d.metaDataFileSize() > d.maxBytesDiskSpace {
+		// check a .bad file exists if it does, delete that first
+
+		// else delete the read file (makeSpace)
+		if d.readFileNum == d.writeFileNum {
+			d.skipToNextRWFile()
+		} else {
+			if d.readFile == nil {
+				curFileName := d.fileName(d.readFileNum)
+				d.readFile, err = os.OpenFile(curFileName, os.O_RDONLY, 0600)
+				if err != nil {
+					return err
+				}
+			}
+
+			// get the total messages
+			_, err = d.readFile.Seek(numFileMsgBytes, 2)
+			if err != nil {
+				d.readFile.Close()
+				d.readFile = nil
+				return err
+			}
+
+			var totalMessages int64
+			err = binary.Read(d.reader, binary.BigEndian, &totalMessages)
+			if err != nil {
+				d.readFile.Close()
+				d.readFile = nil
+				return err
+			}
+
+			// update depth with the remaining number of messages
+			// moveForward() decrements depth, so counteract that with a +1
+			d.depth -= totalMessages - d.readMessages + 1
+
+			// get the size of the file
+			stat, err := d.readFile.Stat()
+			if err != nil {
+				d.readFile.Close()
+				d.readFile = nil
+				return err
+			}
+			readFileSize := stat.Size()
+
+			// subtract 12 since moveForward() adds 12
+			d.readPos = readFileSize - 12
+			d.readMsgSize = 0
+
+			if d.readFileNum == d.nextReadFileNum {
+				d.nextReadFileNum++
+				d.nextReadPos = 0
+			}
+
+			d.moveForward()
+		}
 	}
 
 	// add all data to writeBuf before writing to file
@@ -475,7 +528,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	totalBytes := int64(4 + dataLen)
 
 	// check if we reached the file size limit with this message
-	if d.diskLimitFeatIsOn && d.writePos+totalBytes+8 >= d.maxBytesPerFile {
+	if d.diskLimitFeatIsOn && d.writePos+totalBytes+numFileMsgBytes >= d.maxBytesPerFile {
 		// write number of messages in binary to file
 		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages+1)
 		if err != nil {
@@ -498,7 +551,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 	if d.diskLimitFeatIsOn {
 		// save space for the number of messages in this file
-		fileSize += 8
+		fileSize += numFileMsgBytes
 		d.writeBytes += totalBytes
 		d.writeMessages += 1
 	}
@@ -513,7 +566,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 		if d.diskLimitFeatIsOn {
 			// add bytes for the number of messages in the file
-			d.writeBytes += 8
+			d.writeBytes += numFileMsgBytes
 			d.writeMessages = 0
 		}
 
