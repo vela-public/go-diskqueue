@@ -350,7 +350,7 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 		panic(err)
 	}
 	defer os.RemoveAll(tmpDir)
-	dq := NewWithDiskSpace(dqName, tmpDir, 7000, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	dq := NewWithDiskSpace(dqName, tmpDir, 6040, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
 	msgSize := 1000
@@ -434,7 +434,6 @@ completeReadFile:
 		// test that read position and messages reset when a file is completely read
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
-		t.Logf("Write bytes: %d", d.writeBytes)
 		if d.depth == 1 &&
 			d.writeBytes == 1004 &&
 			d.readFileNum == 1 &&
@@ -516,18 +515,34 @@ meetDiskSizeLimit:
 	dq.Put(msg)
 	dq.Put(msg)
 
-	// meet the file size limit exactly (2048 bytes) when writeFileNum
+	// meet the disk size limit exactly (6040 bytes) when writeFileNum
 	// is ahead of readFileNum
 	dq.Put(msg)
 	dq.Put(msg)
-	dq.Put(msg)
+
+	totalDiskBytes := int64(5*(msgSize+4) + 8)
+
+	metaDataFile, err := os.OpenFile(dq.(*diskQueue).metaDataFileName(), os.O_RDONLY, 0600)
+
+	var metaDataFileSize int64
+	if err == nil {
+		var stat os.FileInfo
+
+		stat, err = metaDataFile.Stat()
+		if err == nil {
+			metaDataFileSize = stat.Size()
+		}
+	}
+
+	diskBytesRemaining := 6040 - metaDataFileSize - (totalDiskBytes + 12)
+	dq.Put(make([]byte, diskBytesRemaining))
 
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 6 &&
-			d.writeBytes == 6040 &&
+			d.writeBytes == 6040-metaDataFileSize &&
 			d.readFileNum == 3 &&
 			d.writeFileNum == 5 &&
 			d.readMessages == 0 &&
@@ -542,22 +557,20 @@ meetDiskSizeLimit:
 	panic("fail")
 
 surpassDiskSizeLimit:
-	t.Log("Start")
-	dq.Put(msg)
-	t.Log("Msg put")
+	dq.Put(make([]byte, 1))
 
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 4 &&
-			d.writeBytes == 4024 &&
+			d.writeBytes == 3025-metaDataFileSize &&
 			d.readFileNum == 4 &&
 			d.writeFileNum == 5 &&
 			d.readMessages == 0 &&
 			d.writeMessages == 1 &&
 			d.readPos == 0 &&
-			d.writePos == 1004 {
+			d.writePos == 5 {
 			// success
 			goto done
 		}
