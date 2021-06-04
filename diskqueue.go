@@ -424,7 +424,7 @@ func (d *diskQueue) metaDataFileSize() int64 {
 	return metaDataFileSize
 }
 
-func (d *diskQueue) makeSpace() error {
+func (d *diskQueue) freeUpDiskSpace() error {
 	var err error
 
 	// check a .bad file exists if it does, delete that first
@@ -516,7 +516,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 	// check if we have enough space to write this message
 	for d.diskLimitFeatIsOn && d.writeBytes+d.metaDataFileSize() > d.maxBytesDiskSpace {
-		err = d.makeSpace()
+		err = d.freeUpDiskSpace()
 	}
 
 	// add all data to writeBuf before writing to file
