@@ -515,7 +515,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	}
 
 	// check if we have enough space to write this message
-	if d.diskLimitFeatIsOn && d.writeBytes+d.metaDataFileSize()+int64(4+dataLen)+numFileMsgBytes > d.maxBytesDiskSpace {
+	for d.diskLimitFeatIsOn && d.writeBytes+d.metaDataFileSize()+int64(4+dataLen)+numFileMsgBytes > d.maxBytesDiskSpace {
 		err = d.freeUpDiskSpace()
 		if err != nil {
 			d.logf(ERROR, "Not able to free up space: %s", err)
