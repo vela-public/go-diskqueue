@@ -424,6 +424,66 @@ func (d *diskQueue) metaDataFileSize() int64 {
 	return metaDataFileSize
 }
 
+func (d *diskQueue) makeSpace() error {
+	var err error
+
+	// check a .bad file exists if it does, delete that first
+
+	// else delete the read file (makeSpace)
+	if d.readFileNum == d.writeFileNum {
+		d.skipToNextRWFile()
+	} else {
+		if d.readFile == nil {
+			curFileName := d.fileName(d.readFileNum)
+			d.readFile, err = os.OpenFile(curFileName, os.O_RDONLY, 0600)
+			if err != nil {
+				return err
+			}
+		}
+
+		// read total messages number at the end of the file
+		_, err = d.readFile.Seek(numFileMsgBytes, 2)
+		if err != nil {
+			d.readFile.Close()
+			d.readFile = nil
+			return err
+		}
+
+		var totalMessages int64
+		err = binary.Read(d.reader, binary.BigEndian, &totalMessages)
+		if err != nil {
+			d.readFile.Close()
+			d.readFile = nil
+			return err
+		}
+
+		// update depth with the remaining number of messages
+		d.depth -= totalMessages - d.readMessages
+
+		// get the size of the file
+		stat, err := d.readFile.Stat()
+		if err != nil {
+			d.readFile.Close()
+			d.readFile = nil
+			return err
+		}
+		readFileSize := stat.Size()
+
+		d.readFile.Close()
+		d.readFile = nil
+
+		// we have not finished reading this file
+		if d.readFileNum == d.nextReadFileNum {
+			d.nextReadFileNum++
+			d.nextReadPos = 0
+		}
+
+		d.moveToNextReadFile(readFileSize)
+	}
+
+	return nil
+}
+
 // writeOne performs a low level filesystem write for a single []byte
 // while advancing write positions and rolling files, if necessary
 func (d *diskQueue) writeOne(data []byte) error {
@@ -455,61 +515,8 @@ func (d *diskQueue) writeOne(data []byte) error {
 	}
 
 	// check if we have enough space to write this message
-	if d.diskLimitFeatIsOn && d.writeBytes+d.metaDataFileSize() > d.maxBytesDiskSpace {
-		// check a .bad file exists if it does, delete that first
-
-		// else delete the read file (makeSpace)
-		if d.readFileNum == d.writeFileNum {
-			d.skipToNextRWFile()
-		} else {
-			if d.readFile == nil {
-				curFileName := d.fileName(d.readFileNum)
-				d.readFile, err = os.OpenFile(curFileName, os.O_RDONLY, 0600)
-				if err != nil {
-					return err
-				}
-			}
-
-			// get the total messages
-			_, err = d.readFile.Seek(numFileMsgBytes, 2)
-			if err != nil {
-				d.readFile.Close()
-				d.readFile = nil
-				return err
-			}
-
-			var totalMessages int64
-			err = binary.Read(d.reader, binary.BigEndian, &totalMessages)
-			if err != nil {
-				d.readFile.Close()
-				d.readFile = nil
-				return err
-			}
-
-			// update depth with the remaining number of messages
-			// moveForward() decrements depth, so counteract that with a +1
-			d.depth -= totalMessages - d.readMessages + 1
-
-			// get the size of the file
-			stat, err := d.readFile.Stat()
-			if err != nil {
-				d.readFile.Close()
-				d.readFile = nil
-				return err
-			}
-			readFileSize := stat.Size()
-
-			// subtract 12 since moveForward() adds 12
-			d.readPos = readFileSize - 12
-			d.readMsgSize = 0
-
-			if d.readFileNum == d.nextReadFileNum {
-				d.nextReadFileNum++
-				d.nextReadPos = 0
-			}
-
-			d.moveForward()
-		}
+	for d.diskLimitFeatIsOn && d.writeBytes+d.metaDataFileSize() > d.maxBytesDiskSpace {
+		err = d.makeSpace()
 	}
 
 	// add all data to writeBuf before writing to file
@@ -725,17 +732,10 @@ func (d *diskQueue) checkTailCorruption(depth int64) {
 	}
 }
 
-func (d *diskQueue) moveForward() {
-	// add bytes for the number of messages and the size of the message
-	readFileLen := int64(d.readMsgSize) + d.readPos + 12
+func (d *diskQueue) moveToNextReadFile(readFileSize int64) {
 	oldReadFileNum := d.readFileNum
 	d.readFileNum = d.nextReadFileNum
 	d.readPos = d.nextReadPos
-	d.depth -= 1
-
-	if d.diskLimitFeatIsOn {
-		d.readMessages += 1
-	}
 
 	// see if we need to clean up the old file
 	if oldReadFileNum != d.nextReadFileNum {
@@ -751,9 +751,21 @@ func (d *diskQueue) moveForward() {
 
 		if d.diskLimitFeatIsOn {
 			d.readMessages = 0
-			d.writeBytes -= readFileLen
+			d.writeBytes -= readFileSize
 		}
 	}
+}
+
+func (d *diskQueue) moveForward() {
+	// add bytes for the number of messages and the size of the message
+	readFileSize := int64(d.readMsgSize) + d.readPos + 12
+	d.depth -= 1
+
+	if d.diskLimitFeatIsOn {
+		d.readMessages += 1
+	}
+
+	d.moveToNextReadFile(readFileSize)
 
 	d.checkTailCorruption(d.depth)
 }
