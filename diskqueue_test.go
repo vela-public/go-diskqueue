@@ -350,7 +350,7 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 		panic(err)
 	}
 	defer os.RemoveAll(tmpDir)
-	dq := NewWithDiskSpace(dqName, tmpDir, 6000, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	dq := NewWithDiskSpace(dqName, tmpDir, 7000, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
 	msgSize := 1000
@@ -503,6 +503,61 @@ completeReadFileAgain:
 			d.writeMessages == 0 &&
 			d.readPos == 0 &&
 			d.writePos == 0 {
+			// success
+			goto meetDiskSizeLimit
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+meetDiskSizeLimit:
+	// write a complete file
+	dq.Put(msg)
+	dq.Put(msg)
+	dq.Put(msg)
+
+	// meet the file size limit exactly (2048 bytes) when writeFileNum
+	// is ahead of readFileNum
+	dq.Put(msg)
+	dq.Put(msg)
+	dq.Put(msg)
+
+	for i := 0; i < 10; i++ {
+		// test that read position and messages reset when a file is completely read
+		// test the readFileNum correctly increments
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 6 &&
+			d.writeBytes == 6040 &&
+			d.readFileNum == 3 &&
+			d.writeFileNum == 5 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 {
+			// success
+			goto surpassDiskSizeLimit
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+surpassDiskSizeLimit:
+	t.Log("Start")
+	dq.Put(msg)
+	t.Log("Msg put")
+
+	for i := 0; i < 10; i++ {
+		// test that read position and messages reset when a file is completely read
+		// test the readFileNum correctly increments
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 4 &&
+			d.writeBytes == 4024 &&
+			d.readFileNum == 4 &&
+			d.writeFileNum == 5 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 1004 {
 			// success
 			goto done
 		}

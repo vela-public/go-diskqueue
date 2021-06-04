@@ -442,7 +442,7 @@ func (d *diskQueue) freeUpDiskSpace() error {
 		}
 
 		// read total messages number at the end of the file
-		_, err = d.readFile.Seek(numFileMsgBytes, 2)
+		_, err = d.readFile.Seek(-numFileMsgBytes, 2)
 		if err != nil {
 			d.readFile.Close()
 			d.readFile = nil
@@ -515,8 +515,13 @@ func (d *diskQueue) writeOne(data []byte) error {
 	}
 
 	// check if we have enough space to write this message
-	for d.diskLimitFeatIsOn && d.writeBytes+d.metaDataFileSize() > d.maxBytesDiskSpace {
+	if d.diskLimitFeatIsOn && d.writeBytes+d.metaDataFileSize()+int64(4+dataLen)+numFileMsgBytes > d.maxBytesDiskSpace {
 		err = d.freeUpDiskSpace()
+		if err != nil {
+			d.logf(ERROR, "Not able to free up space: %s", err)
+		}
+
+		err = nil
 	}
 
 	// add all data to writeBuf before writing to file
