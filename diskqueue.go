@@ -69,6 +69,7 @@ type diskQueue struct {
 	writeMessages int64
 	writeBytes    int64
 	depth         int64
+	badBytes      int64
 
 	sync.RWMutex
 
@@ -308,6 +309,7 @@ func (d *diskQueue) skipToNextRWFile() error {
 	d.depth = 0
 
 	if d.diskLimitFeatIsOn {
+		d.badBytes = 0
 		d.writeBytes = 0
 		d.readMessages = 0
 		d.writeMessages = 0
@@ -419,8 +421,8 @@ func (d *diskQueue) metaDataFileSize() int64 {
 		}
 	}
 	if err != nil {
-		// use max file size (8 int64 fields)
-		metaDataFileSize = 64
+		// use max file size (9 int64 fields)
+		metaDataFileSize = 72
 	}
 
 	return metaDataFileSize
@@ -511,21 +513,27 @@ func (d *diskQueue) getOldestBadFileInfo() fs.FileInfo {
 
 func (d *diskQueue) freeUpDiskSpace() error {
 	var err error
+	badFileExists := false
 
-	oldestBadFileInfo := d.getOldestBadFileInfo()
+	if d.badBytes > 0 {
+		oldestBadFileInfo := d.getOldestBadFileInfo()
 
-	// check if a .bad file exists. If it does, delete that first
-	if oldestBadFileInfo != nil {
-		badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
+		// check if a .bad file exists. If it does, delete that first
+		if oldestBadFileInfo != nil {
+			badFileExists = true
+			badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
 
-		err = os.Remove(badFileFilePath)
-		if err == nil {
-			d.writeBytes -= oldestBadFileInfo.Size()
-		} else {
-			d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
+			err = os.Remove(badFileFilePath)
+			if err == nil {
+				d.writeBytes -= oldestBadFileInfo.Size()
+			} else {
+				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
+			}
 		}
-	} else {
-		// delete the read file (makeSpace)
+	}
+
+	if !badFileExists {
+		// delete the read file (make space)
 		if d.readFileNum == d.writeFileNum {
 			d.skipToNextRWFile()
 		} else {
@@ -580,7 +588,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 		metaDataFileSize := d.metaDataFileSize()
 
 		// check if we will reach or surpass file size limit
-		if d.writePos+totalBytes+numFileMsgBytes >= d.maxBytesPerFile {
+		if d.badBytes+d.writePos+totalBytes+numFileMsgBytes >= d.maxBytesPerFile {
 			reachedFileSizeLimit = true
 		}
 
@@ -698,10 +706,11 @@ func (d *diskQueue) retrieveMetaData() error {
 
 	// if user is using disk space limit feature
 	if d.diskLimitFeatIsOn {
-		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n%d",
 			&d.depth,
 			&d.readFileNum, &d.readMessages, &d.readPos,
-			&d.writeBytes, &d.writeFileNum, &d.writeMessages, &d.writePos)
+			&d.writeBytes, &d.writeFileNum, &d.writeMessages, &d.writePos,
+			&d.badBytes)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
 			&d.depth,
@@ -735,10 +744,11 @@ func (d *diskQueue) persistMetaData() error {
 
 	// if user is using disk space limit feature
 	if d.diskLimitFeatIsOn {
-		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
+		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n%d",
 			d.depth,
 			d.readFileNum, d.readMessages, d.readPos,
-			d.writeBytes, d.writeFileNum, d.writeMessages, d.writePos)
+			d.writeBytes, d.writeFileNum, d.writeMessages, d.writePos,
+			d.badBytes)
 	} else {
 		_, err = fmt.Fprintf(f, "%d\n%d,%d\n%d,%d\n",
 			d.depth,
@@ -867,6 +877,15 @@ func (d *diskQueue) handleReadError() {
 		d.logf(ERROR,
 			"DISKQUEUE(%s) failed to rename bad diskqueue file %s to %s",
 			d.name, badFn, badRenameFn)
+	}
+
+	if d.diskLimitFeatIsOn {
+		d.badBytes += d.maxBytesPerFileRead
+		if d.maxBytesPerFileRead == d.maxBytesPerFile {
+			// this could mean that we were not able to get the
+			// correct file size
+			d.badBytes += int64(d.maxMsgSize) + 4
+		}
 	}
 
 	d.readFileNum++
