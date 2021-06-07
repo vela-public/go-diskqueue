@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -474,21 +476,67 @@ func (d *diskQueue) removeReadFile() error {
 	return nil
 }
 
+func (d *diskQueue) getOldestBadFileInfo() (fs.FileInfo, error) {
+	var oldestBadFileInfo fs.FileInfo
+
+	getFirstBadFile := func(path string, d fs.DirEntry, err error) error {
+		if d.IsDir() {
+			// if the entry is a directory, skip it
+			return fs.SkipDir
+		}
+
+		if err != nil {
+			return err
+		}
+
+		var e error
+
+		if filepath.Ext(d.Name()) == ".bad" {
+			oldestBadFileInfo, e = d.Info()
+			if e != nil {
+				oldestBadFileInfo = nil
+			}
+		}
+
+		return nil
+	}
+
+	err := filepath.WalkDir(d.dataPath, getFirstBadFile)
+	if err != nil {
+		return nil, err
+	}
+
+	return oldestBadFileInfo, nil
+}
+
 func (d *diskQueue) freeUpDiskSpace() error {
 	var err error
+	var oldestBadFileInfo fs.FileInfo
 
-	// check a .bad file exists if it does, delete that first
+	oldestBadFileInfo, err = d.getOldestBadFileInfo()
 
-	// else delete the read file (makeSpace)
-	if d.readFileNum == d.writeFileNum {
-		d.skipToNextRWFile()
+	// check if a .bad file exists and no error occurred. if it does, delete that first
+	if err == nil && oldestBadFileInfo != nil {
+		badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
+
+		err = os.Remove(badFileFilePath)
+		if err == nil {
+			d.writeBytes -= oldestBadFileInfo.Size()
+		} else {
+			d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
+		}
 	} else {
-		err = d.removeReadFile()
-		if err != nil {
-			d.logf(ERROR, "DISKQUEUE(%s) not able to delete file(%s) - %s",
-				d.name, d.fileName(d.readFileNum), err)
-			d.handleReadError()
-			return err
+		// delete the read file (makeSpace)
+		if d.readFileNum == d.writeFileNum {
+			d.skipToNextRWFile()
+		} else {
+			err = d.removeReadFile()
+			if err != nil {
+				d.logf(ERROR, "DISKQUEUE(%s) not able to delete file(%s) - %s",
+					d.name, d.fileName(d.readFileNum), err)
+				d.handleReadError()
+				return err
+			}
 		}
 	}
 
