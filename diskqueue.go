@@ -476,7 +476,7 @@ func (d *diskQueue) removeReadFile() error {
 	return nil
 }
 
-func (d *diskQueue) getOldestBadFileInfo() (fs.FileInfo, error) {
+func (d *diskQueue) getOldestBadFileInfo() fs.FileInfo {
 	var oldestBadFileInfo fs.FileInfo
 
 	getFirstBadFile := func(path string, d fs.DirEntry, err error) error {
@@ -503,20 +503,19 @@ func (d *diskQueue) getOldestBadFileInfo() (fs.FileInfo, error) {
 
 	err := filepath.WalkDir(d.dataPath, getFirstBadFile)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 
-	return oldestBadFileInfo, nil
+	return oldestBadFileInfo
 }
 
 func (d *diskQueue) freeUpDiskSpace() error {
 	var err error
-	var oldestBadFileInfo fs.FileInfo
 
-	oldestBadFileInfo, err = d.getOldestBadFileInfo()
+	oldestBadFileInfo := d.getOldestBadFileInfo()
 
-	// check if a .bad file exists and no error occurred. if it does, delete that first
-	if err == nil && oldestBadFileInfo != nil {
+	// check if a .bad file exists. If it does, delete that first
+	if oldestBadFileInfo != nil {
 		badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
 
 		err = os.Remove(badFileFilePath)
