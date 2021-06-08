@@ -518,13 +518,22 @@ func (d *diskQueue) freeUpDiskSpace() error {
 	var err error
 	badFileExists := false
 
-	if d.badBytes > 0 {
+	if d.badBytes != 0 {
 		badFileInfos := d.getAllBadFileInfo()
+
+		// if badBytes is negative, something went wrong, so recalculate total bad files size
+		if d.badBytes < 0 {
+			d.badBytes = 0
+			for _, badFileInfo := range badFileInfos {
+				d.badBytes += badFileInfo.Size()
+			}
+		}
 
 		// check if a .bad file exists. If it does, delete that first
 		if badFileInfos != nil {
-			oldestBadFileInfo := badFileInfos[0]
 			badFileExists = true
+
+			oldestBadFileInfo := badFileInfos[0]
 			badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
 
 			err = os.Remove(badFileFilePath)
@@ -534,6 +543,9 @@ func (d *diskQueue) freeUpDiskSpace() error {
 			} else {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
 			}
+		} else {
+			// there are no bad files
+			d.badBytes = 0
 		}
 	}
 
