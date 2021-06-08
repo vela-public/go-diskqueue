@@ -175,7 +175,7 @@ func (d *diskQueue) start() {
 		d.logf(ERROR, "DISKQUEUE(%s) failed to retrieveMetaData - %s", d.name, err)
 	}
 
-	// get the size of all the bad files
+	// get the size of all the .bad files
 	badFileInfos := d.getAllBadFileInfo()
 	for _, badFileInfo := range badFileInfos {
 		d.badBytes += badFileInfo.Size()
@@ -486,7 +486,7 @@ func (d *diskQueue) removeReadFile() error {
 func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 	var badFileInfos []fs.FileInfo
 
-	getFirstBadFile := func(path string, d fs.DirEntry, err error) error {
+	getBadFileInfos := func(path string, d fs.DirEntry, err error) error {
 		if d.IsDir() {
 			// if the entry is a directory, skip it
 			return fs.SkipDir
@@ -506,7 +506,7 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 		return nil
 	}
 
-	err := filepath.WalkDir(d.dataPath, getFirstBadFile)
+	err := filepath.WalkDir(d.dataPath, getBadFileInfos)
 	if err != nil {
 		return nil
 	}
@@ -518,10 +518,11 @@ func (d *diskQueue) freeUpDiskSpace() error {
 	var err error
 	badFileExists := false
 
+	// delete .bad files before deleting non-corrupted files (i.e. readFile)
 	if d.badBytes != 0 {
 		badFileInfos := d.getAllBadFileInfo()
 
-		// if badBytes is negative, something went wrong, so recalculate total bad files size
+		// if badBytes is negative, something went wrong, so recalculate total .bad files size
 		if d.badBytes < 0 {
 			d.badBytes = 0
 			for _, badFileInfo := range badFileInfos {
@@ -538,7 +539,6 @@ func (d *diskQueue) freeUpDiskSpace() error {
 
 			err = os.Remove(badFileFilePath)
 			if err == nil {
-				d.writeBytes -= oldestBadFileInfo.Size()
 				d.badBytes -= oldestBadFileInfo.Size()
 			} else {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
