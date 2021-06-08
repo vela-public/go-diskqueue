@@ -526,6 +526,7 @@ func (d *diskQueue) freeUpDiskSpace() error {
 			err = os.Remove(badFileFilePath)
 			if err == nil {
 				d.writeBytes -= oldestBadFileInfo.Size()
+				d.badBytes -= oldestBadFileInfo.Size()
 			} else {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
 			}
@@ -588,7 +589,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 		metaDataFileSize := d.metaDataFileSize()
 
 		// check if we will reach or surpass file size limit
-		if d.badBytes+d.writePos+totalBytes+numFileMsgBytes >= d.maxBytesPerFile {
+		if d.writePos+totalBytes+numFileMsgBytes >= d.maxBytesPerFile {
 			reachedFileSizeLimit = true
 		}
 
@@ -598,7 +599,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 		}
 
 		// keep freeing up disk space until we have enough space to write this message
-		for metaDataFileSize+d.writeBytes+expectedBytesIncrease > d.maxBytesDiskSpace {
+		for d.badBytes+metaDataFileSize+d.writeBytes+expectedBytesIncrease > d.maxBytesDiskSpace {
 			d.freeUpDiskSpace()
 		}
 	} else if d.writePos+totalBytes >= d.maxBytesPerFile {
