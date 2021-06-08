@@ -601,14 +601,6 @@ func (d *diskQueue) writeOne(data []byte) error {
 	reachedFileSizeLimit := false
 
 	if d.diskLimitFeatIsOn {
-		// If there the data to be written is bigger than the disk size limit, do not write
-		if totalBytes+8 > d.maxBytesDiskSpace {
-			return errors.New("Not enough disk space to write message")
-		}
-
-		// check if we have enough space to write this message
-		metaDataFileSize := d.metaDataFileSize()
-
 		// check if we will reach or surpass file size limit
 		if d.writePos+totalBytes+numFileMsgBytes >= d.maxBytesPerFile {
 			reachedFileSizeLimit = true
@@ -618,6 +610,14 @@ func (d *diskQueue) writeOne(data []byte) error {
 		if reachedFileSizeLimit {
 			expectedBytesIncrease += numFileMsgBytes
 		}
+
+		// If the data to be written is bigger than the disk size limit, do not write
+		if expectedBytesIncrease > d.maxBytesDiskSpace {
+			return errors.New("message size surpasses disk size limit")
+		}
+
+		// check if we have enough space to write this message
+		metaDataFileSize := d.metaDataFileSize()
 
 		// keep freeing up disk space until we have enough space to write this message
 		for d.badBytes+metaDataFileSize+d.writeBytes+expectedBytesIncrease > d.maxBytesDiskSpace {
