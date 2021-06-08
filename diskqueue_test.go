@@ -581,6 +581,76 @@ surpassDiskSizeLimit:
 done:
 }
 
+func TestDiskSizeImplementationMsgSizeGreaterThanFileSize(t *testing.T) {
+	// write three files
+
+	l := NewTestLogger(t)
+	dqName := "test_disk_queue_read_after_sync" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dq := NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 0, 1<<12, 2500, 50*time.Millisecond, l)
+	defer dq.Close()
+
+	msgSize := 1000
+	msg := make([]byte, msgSize)
+
+	// file size: 1533
+	dq.Put(msg)
+	dq.Put(make([]byte, 517))
+
+	// file size: 1032
+	dq.Put(msg)
+	dq.Put(make([]byte, 16))
+
+	// file size: 1512
+	dq.Put(make([]byte, 1500))
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 5 &&
+			d.writeBytes == 4077 &&
+			d.readFileNum == 0 &&
+			d.writeFileNum == 3 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 {
+			// success
+			goto writeLargeMsg
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+writeLargeMsg:
+	// Write a large message that causes the deletion of three files
+	dq.Put(make([]byte, 3000))
+
+	for i := 0; i < 10; i++ {
+		// test that read position and messages reset when a file is completely read
+		// test the readFileNum correctly increments
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 1 &&
+			d.writeBytes == 3012 &&
+			d.readFileNum == 3 &&
+			d.writeFileNum == 4 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 {
+			// success
+			goto done
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+done:
+}
+
 func TestDiskQueueTorture(t *testing.T) {
 	var wg sync.WaitGroup
 

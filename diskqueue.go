@@ -438,10 +438,13 @@ func (d *diskQueue) removeReadFile() error {
 
 	if d.readFile == nil {
 		curFileName := d.fileName(d.readFileNum)
+
 		d.readFile, err = os.OpenFile(curFileName, os.O_RDONLY, 0600)
 		if err != nil {
 			return err
 		}
+
+		d.reader = bufio.NewReader(d.readFile)
 	}
 
 	closeReadFile := func() {
@@ -556,8 +559,7 @@ func (d *diskQueue) freeUpDiskSpace() error {
 		} else {
 			err = d.removeReadFile()
 			if err != nil {
-				d.logf(ERROR, "DISKQUEUE(%s) not able to delete file(%s) - %s",
-					d.name, d.fileName(d.readFileNum), err)
+				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(d.readFileNum), err)
 				d.handleReadError()
 				return err
 			}
@@ -900,12 +902,17 @@ func (d *diskQueue) handleReadError() {
 	}
 
 	if d.diskLimitFeatIsOn {
-		d.badBytes += d.maxBytesPerFileRead
-		if d.maxBytesPerFileRead == d.maxBytesPerFile {
-			// this could mean that we were not able to get the
-			// correct file size
-			d.badBytes += int64(d.maxMsgSize) + 4
+		var stat os.FileInfo
+		stat, err = os.Stat(badRenameFn)
+		var badFileSize int64
+		if err == nil {
+			badFileSize = stat.Size()
+		} else {
+			badFileSize = int64(d.maxMsgSize+d.maxMsgSize) + 4
 		}
+
+		d.badBytes += badFileSize
+		d.writeBytes -= badFileSize
 	}
 
 	d.readFileNum++
