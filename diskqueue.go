@@ -175,6 +175,12 @@ func (d *diskQueue) start() {
 		d.logf(ERROR, "DISKQUEUE(%s) failed to retrieveMetaData - %s", d.name, err)
 	}
 
+	// get the size of all the bad files
+	badFileInfos := d.getAllBadFileInfo()
+	for _, badFileInfo := range badFileInfos {
+		d.badBytes += badFileInfo.Size()
+	}
+
 	go d.ioLoop()
 }
 
@@ -309,7 +315,6 @@ func (d *diskQueue) skipToNextRWFile() error {
 	d.depth = 0
 
 	if d.diskLimitFeatIsOn {
-		d.badBytes = 0
 		d.writeBytes = 0
 		d.readMessages = 0
 		d.writeMessages = 0
@@ -478,8 +483,8 @@ func (d *diskQueue) removeReadFile() error {
 	return nil
 }
 
-func (d *diskQueue) getOldestBadFileInfo() fs.FileInfo {
-	var oldestBadFileInfo fs.FileInfo
+func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
+	var badFileInfos []fs.FileInfo
 
 	getFirstBadFile := func(path string, d fs.DirEntry, err error) error {
 		if d.IsDir() {
@@ -491,12 +496,10 @@ func (d *diskQueue) getOldestBadFileInfo() fs.FileInfo {
 			return err
 		}
 
-		var e error
-
 		if filepath.Ext(d.Name()) == ".bad" {
-			oldestBadFileInfo, e = d.Info()
-			if e != nil {
-				oldestBadFileInfo = nil
+			badFileInfo, e := d.Info()
+			if e != nil && badFileInfo != nil {
+				badFileInfos = append(badFileInfos, badFileInfo)
 			}
 		}
 
@@ -508,7 +511,7 @@ func (d *diskQueue) getOldestBadFileInfo() fs.FileInfo {
 		return nil
 	}
 
-	return oldestBadFileInfo
+	return badFileInfos
 }
 
 func (d *diskQueue) freeUpDiskSpace() error {
@@ -516,10 +519,11 @@ func (d *diskQueue) freeUpDiskSpace() error {
 	badFileExists := false
 
 	if d.badBytes > 0 {
-		oldestBadFileInfo := d.getOldestBadFileInfo()
+		badFileInfos := d.getAllBadFileInfo()
 
 		// check if a .bad file exists. If it does, delete that first
-		if oldestBadFileInfo != nil {
+		if badFileInfos != nil {
+			oldestBadFileInfo := badFileInfos[0]
 			badFileExists = true
 			badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
 
@@ -707,11 +711,10 @@ func (d *diskQueue) retrieveMetaData() error {
 
 	// if user is using disk space limit feature
 	if d.diskLimitFeatIsOn {
-		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n%d",
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			&d.depth,
 			&d.readFileNum, &d.readMessages, &d.readPos,
-			&d.writeBytes, &d.writeFileNum, &d.writeMessages, &d.writePos,
-			&d.badBytes)
+			&d.writeBytes, &d.writeFileNum, &d.writeMessages, &d.writePos)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
 			&d.depth,
@@ -745,11 +748,10 @@ func (d *diskQueue) persistMetaData() error {
 
 	// if user is using disk space limit feature
 	if d.diskLimitFeatIsOn {
-		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n%d",
+		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			d.depth,
 			d.readFileNum, d.readMessages, d.readPos,
-			d.writeBytes, d.writeFileNum, d.writeMessages, d.writePos,
-			d.badBytes)
+			d.writeBytes, d.writeFileNum, d.writeMessages, d.writePos)
 	} else {
 		_, err = fmt.Fprintf(f, "%d\n%d,%d\n%d,%d\n",
 			d.depth,
