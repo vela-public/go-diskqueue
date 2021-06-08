@@ -69,7 +69,6 @@ type diskQueue struct {
 	writeMessages int64
 	writeBytes    int64
 	depth         int64
-	badBytes      int64
 
 	sync.RWMutex
 
@@ -85,6 +84,7 @@ type diskQueue struct {
 	syncTimeout         time.Duration // duration of time per fsync
 	exitFlag            int32
 	needSync            bool
+	badBytes            int64
 
 	// keeps track of the position where we have read
 	// (but not yet sent over readChan)
@@ -426,8 +426,8 @@ func (d *diskQueue) metaDataFileSize() int64 {
 		}
 	}
 	if err != nil {
-		// use max file size (9 int64 fields)
-		metaDataFileSize = 72
+		// use max file size (8 int64 fields)
+		metaDataFileSize = 64
 	}
 
 	return metaDataFileSize
