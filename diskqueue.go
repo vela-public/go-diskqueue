@@ -87,6 +87,10 @@ type diskQueue struct {
 	nextReadPos     int64
 	nextReadFileNum int64
 
+	// keep track of the msg size we have read
+	// (but not yet sent over readChan)
+	readMsgSize int32
+
 	readFile  *os.File
 	writeFile *os.File
 	reader    *bufio.Reader
@@ -299,8 +303,12 @@ func (d *diskQueue) skipToNextRWFile() error {
 	d.nextReadFileNum = d.writeFileNum
 	d.nextReadPos = 0
 	d.depth = 0
-	d.readMessages = 0
-	d.writeMessages = 0
+
+	if d.enableDiskLimitation {
+		d.writeBytes = 0
+		d.readMessages = 0
+		d.writeMessages = 0
+	}
 
 	return err
 }
@@ -634,11 +642,13 @@ func (d *diskQueue) moveForward() {
 	d.readFileNum = d.nextReadFileNum
 	d.readPos = d.nextReadPos
 	d.depth -= 1
-	d.readMessages += 1
+
+	if d.diskLimitFeatIsOn {
+		d.readMessages += 1
+	}
 
 	// see if we need to clean up the old file
 	if oldReadFileNum != d.nextReadFileNum {
-		d.readMessages = 0
 
 		// sync every time we start reading from a new file
 		d.needSync = true
@@ -647,6 +657,11 @@ func (d *diskQueue) moveForward() {
 		err := os.Remove(fn)
 		if err != nil {
 			d.logf(ERROR, "DISKQUEUE(%s) failed to Remove(%s) - %s", d.name, fn, err)
+		}
+
+		if d.enableDiskLimitation {
+			d.readMessages = 0
+			d.writeBytes -= readFileLen
 		}
 	}
 
@@ -664,7 +679,11 @@ func (d *diskQueue) handleReadError() {
 		}
 		d.writeFileNum++
 		d.writePos = 0
-		d.writeMessages = 0
+
+		if d.enableDiskLimitation {
+			d.writeMessages = 0
+			d.writeBytes = 0
+		}
 	}
 
 	badFn := d.fileName(d.readFileNum)
