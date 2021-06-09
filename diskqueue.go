@@ -664,6 +664,7 @@ func (d *diskQueue) handleReadError() {
 		}
 		d.writeFileNum++
 		d.writePos = 0
+		d.writeMessages = 0
 	}
 
 	badFn := d.fileName(d.readFileNum)
@@ -684,6 +685,7 @@ func (d *diskQueue) handleReadError() {
 	d.readPos = 0
 	d.nextReadFileNum = d.readFileNum
 	d.nextReadPos = 0
+	d.readMessages = 0
 
 	// significant state change, schedule a sync on the next iteration
 	d.needSync = true
