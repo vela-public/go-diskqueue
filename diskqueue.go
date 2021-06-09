@@ -117,7 +117,7 @@ type diskQueue struct {
 	logf AppLogFunc
 
 	// disk limit implementation flag
-	diskLimitFeatIsOn bool
+	enableDiskLimitation bool
 }
 
 // New instantiates an instance of diskQueue, retrieving metadata
@@ -139,30 +139,30 @@ func NewWithDiskSpace(name string, dataPath string,
 	maxBytesDiskSpace int64, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32,
 	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
-	diskLimitFeatIsOn := true
+	enableDiskLimitation := true
 	if maxBytesDiskSpace <= 0 {
 		maxBytesDiskSpace = 0
-		diskLimitFeatIsOn = false
+		enableDiskLimitation = false
 	}
 	d := diskQueue{
-		name:              name,
-		dataPath:          dataPath,
-		maxBytesDiskSpace: maxBytesDiskSpace,
-		maxBytesPerFile:   maxBytesPerFile,
-		minMsgSize:        minMsgSize,
-		maxMsgSize:        maxMsgSize,
-		readChan:          make(chan []byte),
-		depthChan:         make(chan int64),
-		writeChan:         make(chan []byte),
-		writeResponseChan: make(chan error),
-		emptyChan:         make(chan int),
-		emptyResponseChan: make(chan error),
-		exitChan:          make(chan int),
-		exitSyncChan:      make(chan int),
-		syncEvery:         syncEvery,
-		syncTimeout:       syncTimeout,
-		logf:              logf,
-		diskLimitFeatIsOn: diskLimitFeatIsOn,
+		name:                 name,
+		dataPath:             dataPath,
+		maxBytesDiskSpace:    maxBytesDiskSpace,
+		maxBytesPerFile:      maxBytesPerFile,
+		minMsgSize:           minMsgSize,
+		maxMsgSize:           maxMsgSize,
+		readChan:             make(chan []byte),
+		depthChan:            make(chan int64),
+		writeChan:            make(chan []byte),
+		writeResponseChan:    make(chan error),
+		emptyChan:            make(chan int),
+		emptyResponseChan:    make(chan error),
+		exitChan:             make(chan int),
+		exitSyncChan:         make(chan int),
+		syncEvery:            syncEvery,
+		syncTimeout:          syncTimeout,
+		logf:                 logf,
+		enableDiskLimitation: enableDiskLimitation,
 	}
 
 	d.start()
@@ -316,7 +316,7 @@ func (d *diskQueue) skipToNextRWFile() error {
 	d.nextReadPos = 0
 	d.depth = 0
 
-	if d.diskLimitFeatIsOn {
+	if d.enableDiskLimitation {
 		d.writeBytes = 0
 		d.readMessages = 0
 		d.writeMessages = 0
@@ -355,7 +355,7 @@ func (d *diskQueue) readOne() ([]byte, error) {
 			stat, err := d.readFile.Stat()
 			if err == nil {
 				d.maxBytesPerFileRead = stat.Size()
-				if d.diskLimitFeatIsOn {
+				if d.enableDiskLimitation {
 					// last 8 bytes are reserved for the number of messages in this file
 					d.maxBytesPerFileRead -= numFileMsgBytes
 				}
@@ -627,7 +627,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	totalBytes := int64(4 + dataLen)
 	reachedFileSizeLimit := false
 
-	if d.diskLimitFeatIsOn {
+	if d.enableDiskLimitation {
 		// check if we will reach or surpass file size limit
 		if d.writePos+totalBytes+numFileMsgBytes >= d.maxBytesPerFile {
 			reachedFileSizeLimit = true
@@ -668,7 +668,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	}
 
 	// check if we reached the file size limit with this message
-	if d.diskLimitFeatIsOn && reachedFileSizeLimit {
+	if d.enableDiskLimitation && reachedFileSizeLimit {
 		// write number of messages in binary to file
 		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages+1)
 		if err != nil {
@@ -687,7 +687,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	d.writePos += totalBytes
 	d.depth += 1
 
-	if d.diskLimitFeatIsOn {
+	if d.enableDiskLimitation {
 		d.writeBytes += totalBytes
 		d.writeMessages += 1
 	}
@@ -700,7 +700,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 		d.writeFileNum++
 		d.writePos = 0
 
-		if d.diskLimitFeatIsOn {
+		if d.enableDiskLimitation {
 			// add bytes for the number of messages in the file
 			d.writeBytes += numFileMsgBytes
 			d.writeMessages = 0
@@ -754,7 +754,7 @@ func (d *diskQueue) retrieveMetaData() error {
 	defer f.Close()
 
 	// if user is using disk space limit feature
-	if d.diskLimitFeatIsOn {
+	if d.enableDiskLimitation {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			&d.depth,
 			&d.readFileNum, &d.readMessages, &d.readPos,
@@ -791,7 +791,7 @@ func (d *diskQueue) persistMetaData() error {
 	}
 
 	// if user is using disk space limit feature
-	if d.diskLimitFeatIsOn {
+	if d.enableDiskLimitation {
 		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			d.depth,
 			d.readFileNum, d.readMessages, d.readPos,
@@ -878,7 +878,7 @@ func (d *diskQueue) moveToNextReadFile(readFileSize int64) {
 			d.logf(ERROR, "DISKQUEUE(%s) failed to Remove(%s) - %s", d.name, fn, err)
 		}
 
-		if d.diskLimitFeatIsOn {
+		if d.enableDiskLimitation {
 			d.readMessages = 0
 			d.writeBytes -= readFileSize
 		}
@@ -890,7 +890,7 @@ func (d *diskQueue) moveForward() {
 	readFileSize := int64(d.readMsgSize) + d.readPos + 12
 	d.depth -= 1
 
-	if d.diskLimitFeatIsOn {
+	if d.enableDiskLimitation {
 		d.readMessages += 1
 	}
 
@@ -926,14 +926,19 @@ func (d *diskQueue) handleReadError() {
 			d.name, badFn, badRenameFn)
 	}
 
-	if d.diskLimitFeatIsOn {
-		var stat os.FileInfo
-		stat, err = os.Stat(badRenameFn)
+	if d.enableDiskLimitation {
 		var badFileSize int64
-		if err == nil {
-			badFileSize = stat.Size()
+		if d.readFileNum == d.writeFileNum {
+			badFileSize = d.writeBytes
 		} else {
-			badFileSize = int64(d.maxMsgSize+d.maxMsgSize) + 4
+			var stat os.FileInfo
+			stat, err = os.Stat(badRenameFn)
+			if err == nil {
+				badFileSize = stat.Size()
+			} else {
+				// max file size
+				badFileSize = int64(d.maxMsgSize) + d.maxBytesPerFile + 4
+			}
 		}
 
 		d.badBytes += badFileSize

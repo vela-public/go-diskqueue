@@ -263,7 +263,7 @@ type md struct {
 	writePos      int64
 }
 
-func readMetaDataFile(fileName string, retried int, diskLimitFeatIsOn bool) md {
+func readMetaDataFile(fileName string, retried int, enableDiskLimitation bool) md {
 	f, err := os.OpenFile(fileName, os.O_RDONLY, 0600)
 	if err != nil {
 		// provide a simple retry that results in up to
@@ -271,7 +271,7 @@ func readMetaDataFile(fileName string, retried int, diskLimitFeatIsOn bool) md {
 		if retried < 9 {
 			retried++
 			time.Sleep(50 * time.Millisecond)
-			return readMetaDataFile(fileName, retried, diskLimitFeatIsOn)
+			return readMetaDataFile(fileName, retried, enableDiskLimitation)
 		}
 		panic(err)
 	}
@@ -279,7 +279,7 @@ func readMetaDataFile(fileName string, retried int, diskLimitFeatIsOn bool) md {
 
 	var ret md
 
-	if diskLimitFeatIsOn {
+	if enableDiskLimitation {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			&ret.depth,
 			&ret.readFileNum, &ret.readMessages, &ret.readPos,
