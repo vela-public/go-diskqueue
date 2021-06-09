@@ -182,7 +182,6 @@ func (d *diskQueue) start() {
 	for _, badFileInfo := range badFileInfos {
 		d.badBytes += badFileInfo.Size()
 	}
-	d.logf(DEBUG, "BadBytes: %d", d.badBytes)
 
 	go d.ioLoop()
 }
@@ -500,18 +499,15 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 		pathArray := strings.Split(d.dataPath, "/")
 		mainDir = pathArray[len(pathArray)-1]
 	}
-	d.logf(DEBUG, "mainDir: %s", mainDir)
 
 	getBadFileInfos := func(pathStr string, dirEntry fs.DirEntry, err error) error {
 		if dirEntry.Name() == mainDir {
 			// we want to see the contents of this directory
-			d.logf(DEBUG, "We found main directory")
 			return nil
 		}
 
 		if dirEntry.IsDir() {
 			// if the entry is a directory, skip it
-			d.logf(DEBUG, "Skipping dir: %s", dirEntry.Name())
 			return fs.SkipDir
 		}
 
@@ -523,12 +519,11 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 
 		regExp, err := regexp.Compile(d.name + `.diskqueue.\d\d\d\d\d\d.dat.bad`)
 		if err == nil {
-			d.logf(DEBUG, "Compile successful")
 			matched = regExp.MatchString(dirEntry.Name())
 		} else {
 			matched, _ = regexp.Match(`.diskqueue.\d\d\d\d\d\d.dat.bad`, []byte(dirEntry.Name()))
 		}
-		d.logf(DEBUG, "%s, matched: %s. Name: %s", dirEntry.Name(), matched, d.name)
+
 		if matched {
 			badFileInfo, e := dirEntry.Info()
 			if e == nil && badFileInfo != nil {
@@ -543,8 +538,6 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 	if err != nil {
 		return nil
 	}
-
-	d.logf(DEBUG, "%s", badFileInfos)
 
 	return badFileInfos
 }
