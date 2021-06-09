@@ -19,11 +19,12 @@ import (
 type LogLevel int
 
 const (
-	DEBUG = LogLevel(1)
-	INFO  = LogLevel(2)
-	WARN  = LogLevel(3)
-	ERROR = LogLevel(4)
-	FATAL = LogLevel(5)
+	DEBUG            = LogLevel(1)
+	INFO             = LogLevel(2)
+	WARN             = LogLevel(3)
+	ERROR            = LogLevel(4)
+	FATAL            = LogLevel(5)
+	numFileMsgsBytes = 8
 )
 
 type AppLogFunc func(lvl LogLevel, f string, args ...interface{})
@@ -58,17 +59,20 @@ type diskQueue struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 
 	// run-time state (also persisted to disk)
-	readPos      int64
-	writePos     int64
-	readFileNum  int64
-	writeFileNum int64
-	depth        int64
+	readPos       int64
+	writePos      int64
+	readFileNum   int64
+	writeFileNum  int64
+	readMessages  int64
+	writeMessages int64
+	depth         int64
 
 	sync.RWMutex
 
 	// instantiation time metadata
 	name                string
 	dataPath            string
+	maxBytesDiskSize    int64
 	maxBytesPerFile     int64 // cannot change once created
 	maxBytesPerFileRead int64
 	minMsgSize          int32
@@ -101,6 +105,9 @@ type diskQueue struct {
 	exitSyncChan      chan int
 
 	logf AppLogFunc
+
+	// disk limit implementation flag
+	enableDiskLimitation bool
 }
 
 // New instantiates an instance of diskQueue, retrieving metadata
@@ -108,25 +115,52 @@ type diskQueue struct {
 func New(name string, dataPath string, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32,
 	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
+
+	return NewWithDiskSize(name, dataPath,
+		0, maxBytesPerFile,
+		minMsgSize, maxMsgSize,
+		syncEvery, syncTimeout, logf)
+}
+
+// Another constructor that allows users to use Disk Size Limit feature
+// If user is not using Disk Size Limit feature, maxBytesDiskSize will
+// be 0
+func NewWithDiskSize(name string, dataPath string,
+	maxBytesDiskSize int64, maxBytesPerFile int64,
+	minMsgSize int32, maxMsgSize int32,
+	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
+	enableDiskLimitation := true
+	if maxBytesDiskSize <= 0 {
+		maxBytesDiskSize = 0
+		enableDiskLimitation = false
+	}
 	d := diskQueue{
-		name:              name,
-		dataPath:          dataPath,
-		maxBytesPerFile:   maxBytesPerFile,
-		minMsgSize:        minMsgSize,
-		maxMsgSize:        maxMsgSize,
-		readChan:          make(chan []byte),
-		depthChan:         make(chan int64),
-		writeChan:         make(chan []byte),
-		writeResponseChan: make(chan error),
-		emptyChan:         make(chan int),
-		emptyResponseChan: make(chan error),
-		exitChan:          make(chan int),
-		exitSyncChan:      make(chan int),
-		syncEvery:         syncEvery,
-		syncTimeout:       syncTimeout,
-		logf:              logf,
+		name:                 name,
+		dataPath:             dataPath,
+		maxBytesDiskSize:     maxBytesDiskSize,
+		maxBytesPerFile:      maxBytesPerFile,
+		minMsgSize:           minMsgSize,
+		maxMsgSize:           maxMsgSize,
+		readChan:             make(chan []byte),
+		depthChan:            make(chan int64),
+		writeChan:            make(chan []byte),
+		writeResponseChan:    make(chan error),
+		emptyChan:            make(chan int),
+		emptyResponseChan:    make(chan error),
+		exitChan:             make(chan int),
+		exitSyncChan:         make(chan int),
+		syncEvery:            syncEvery,
+		syncTimeout:          syncTimeout,
+		logf:                 logf,
+		enableDiskLimitation: enableDiskLimitation,
 	}
 
+	d.start()
+	return &d
+}
+
+// Get the last known state of DiskQueue from metadata and start ioLoop
+func (d *diskQueue) start() {
 	// no need to lock here, nothing else could possibly be touching this instance
 	err := d.retrieveMetaData()
 	if err != nil && !os.IsNotExist(err) {
@@ -134,7 +168,6 @@ func New(name string, dataPath string, maxBytesPerFile int64,
 	}
 
 	go d.ioLoop()
-	return &d
 }
 
 // Depth returns the depth of the queue
@@ -266,6 +299,8 @@ func (d *diskQueue) skipToNextRWFile() error {
 	d.nextReadFileNum = d.writeFileNum
 	d.nextReadPos = 0
 	d.depth = 0
+	d.readMessages = 0
+	d.writeMessages = 0
 
 	return err
 }
@@ -301,6 +336,10 @@ func (d *diskQueue) readOne() ([]byte, error) {
 			stat, err := d.readFile.Stat()
 			if err == nil {
 				d.maxBytesPerFileRead = stat.Size()
+				if d.enableDiskLimitation {
+					// last 8 bytes are reserved for the number of messages in this file
+					d.maxBytesPerFileRead -= numFileMsgsBytes
+				}
 			}
 		}
 
@@ -383,6 +422,8 @@ func (d *diskQueue) writeOne(data []byte) error {
 		return fmt.Errorf("invalid message write size (%d) minMsgSize=%d maxMsgSize=%d", dataLen, d.minMsgSize, d.maxMsgSize)
 	}
 
+	// add all data to writeBuf before writing to file
+	// this causes everything to be written to file or nothing
 	d.writeBuf.Reset()
 	err = binary.Write(&d.writeBuf, binary.BigEndian, dataLen)
 	if err != nil {
@@ -394,6 +435,17 @@ func (d *diskQueue) writeOne(data []byte) error {
 		return err
 	}
 
+	totalBytes := int64(4 + dataLen)
+
+	// check if we reached the file size limit with this message
+	if d.enableDiskLimitation && d.writePos+totalBytes+numFileMsgsBytes >= d.maxBytesPerFile {
+		// write number of messages in binary to file
+		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages+1)
+		if err != nil {
+			return err
+		}
+	}
+
 	// only write to the file once
 	_, err = d.writeFile.Write(d.writeBuf.Bytes())
 	if err != nil {
@@ -402,17 +454,25 @@ func (d *diskQueue) writeOne(data []byte) error {
 		return err
 	}
 
-	totalBytes := int64(4 + dataLen)
 	d.writePos += totalBytes
 	d.depth += 1
 
-	if d.writePos >= d.maxBytesPerFile {
+	fileSize := d.writePos
+
+	if d.enableDiskLimitation {
+		// save space for the number of messages in this file
+		fileSize += numFileMsgsBytes
+		d.writeMessages += 1
+	}
+
+	if fileSize >= d.maxBytesPerFile {
 		if d.readFileNum == d.writeFileNum {
 			d.maxBytesPerFileRead = d.writePos
 		}
 
 		d.writeFileNum++
 		d.writePos = 0
+		d.writeMessages = 0
 
 		// sync every time we start writing to a new file
 		err = d.sync()
@@ -461,15 +521,23 @@ func (d *diskQueue) retrieveMetaData() error {
 	}
 	defer f.Close()
 
-	var depth int64
-	_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
-		&depth,
-		&d.readFileNum, &d.readPos,
-		&d.writeFileNum, &d.writePos)
+	// if user is using disk size limit feature
+	if d.enableDiskLimitation {
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+			&d.depth,
+			&d.readFileNum, &d.readMessages, &d.readPos,
+			&d.writeFileNum, &d.writeMessages, &d.writePos)
+	} else {
+		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
+			&d.depth,
+			&d.readFileNum, &d.readPos,
+			&d.writeFileNum, &d.writePos)
+	}
+
 	if err != nil {
 		return err
 	}
-	d.depth = depth
+
 	d.nextReadFileNum = d.readFileNum
 	d.nextReadPos = d.readPos
 
@@ -490,10 +558,18 @@ func (d *diskQueue) persistMetaData() error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(f, "%d\n%d,%d\n%d,%d\n",
-		d.depth,
-		d.readFileNum, d.readPos,
-		d.writeFileNum, d.writePos)
+	// if user is using disk size limit feature
+	if d.enableDiskLimitation {
+		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+			d.depth,
+			d.readFileNum, d.readMessages, d.readPos,
+			d.writeFileNum, d.writeMessages, d.writePos)
+	} else {
+		_, err = fmt.Fprintf(f, "%d\n%d,%d\n%d,%d\n",
+			d.depth,
+			d.readFileNum, d.readPos,
+			d.writeFileNum, d.writePos)
+	}
 	if err != nil {
 		f.Close()
 		return err
@@ -558,9 +634,12 @@ func (d *diskQueue) moveForward() {
 	d.readFileNum = d.nextReadFileNum
 	d.readPos = d.nextReadPos
 	d.depth -= 1
+	d.readMessages += 1
 
 	// see if we need to clean up the old file
 	if oldReadFileNum != d.nextReadFileNum {
+		d.readMessages = 0
+
 		// sync every time we start reading from a new file
 		d.needSync = true
 
@@ -585,6 +664,7 @@ func (d *diskQueue) handleReadError() {
 		}
 		d.writeFileNum++
 		d.writePos = 0
+		d.writeMessages = 0
 	}
 
 	badFn := d.fileName(d.readFileNum)
@@ -605,6 +685,7 @@ func (d *diskQueue) handleReadError() {
 	d.readPos = 0
 	d.nextReadFileNum = d.readFileNum
 	d.nextReadPos = 0
+	d.readMessages = 0
 
 	// significant state change, schedule a sync on the next iteration
 	d.needSync = true
