@@ -12,6 +12,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -489,7 +491,21 @@ func (d *diskQueue) removeReadFile() error {
 func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 	var badFileInfos []fs.FileInfo
 
+	// the directory containing DiskQueue files
+	var mainDir string
+	if d.dataPath == "/" {
+		mainDir = d.dataPath
+	} else {
+		pathArray := strings.Split(d.dataPath, "/")
+		mainDir = pathArray[len(pathArray)-1]
+	}
+
 	getBadFileInfos := func(path string, d fs.DirEntry, err error) error {
+		if d.Name() == mainDir {
+			// we want to see the contents of this directory
+			return nil
+		}
+
 		if d.IsDir() {
 			// if the entry is a directory, skip it
 			return fs.SkipDir
@@ -499,9 +515,10 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 			return err
 		}
 
-		if filepath.Ext(d.Name()) == ".bad" {
+		matched, _ := regexp.Match(`test_dq.diskqueue.\d\d\d\d\d\d.dat.bad`, []byte(d.Name()))
+		if matched {
 			badFileInfo, e := d.Info()
-			if e != nil && badFileInfo != nil {
+			if e == nil && badFileInfo != nil {
 				badFileInfos = append(badFileInfos, badFileInfo)
 			}
 		}
