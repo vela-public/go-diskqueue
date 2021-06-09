@@ -651,6 +651,80 @@ writeLargeMsg:
 done:
 }
 
+func createBadFile(dqName string, filePath string, fileNum int64, numBytes int) error {
+	fn := fmt.Sprintf(path.Join(filePath, "%s.diskqueue.%06d.dat.bad"), dqName, fileNum)
+
+	badFile, err := os.OpenFile(fn, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+
+	defer badFile.Close()
+
+	_, err = badFile.Write(make([]byte, numBytes))
+
+	return err
+}
+
+func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
+	// write three files
+
+	l := NewTestLogger(t)
+	dqName := "test_disk_queue_read_after_sync" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// make 2 bad files
+	createBadFile(dqName, tmpDir, 0, 1533)
+	createBadFile(dqName, tmpDir, 1, 1032)
+
+	dq := NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 0, 1<<12, 2500, 50*time.Millisecond, l)
+	defer dq.Close()
+
+	msgSize := 1000
+	msg := make([]byte, msgSize)
+
+	// file size: 1533
+	dq.Put(msg)
+	dq.Put(make([]byte, 517))
+
+	// file size: 1032
+	dq.Put(msg)
+	dq.Put(make([]byte, 16))
+
+	// file size: 1512
+	dq.Put(make([]byte, 1500))
+
+	// read two files
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 1 &&
+			d.writeBytes == 1512 &&
+			d.readFileNum == 2 &&
+			d.writeFileNum == 3 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 {
+			// success
+			goto done
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+done:
+}
+
 func TestDiskQueueTorture(t *testing.T) {
 	var wg sync.WaitGroup
 
