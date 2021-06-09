@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -666,6 +669,60 @@ func createBadFile(dqName string, filePath string, fileNum int64, numBytes int) 
 	return err
 }
 
+func totalBadFileDiskSize(diskQueueName string, dataPath string) int64 {
+	var badFileDiskSize int64
+
+	// the directory containing DiskQueue files
+	var mainDir string
+	if dataPath == "/" {
+		mainDir = dataPath
+	} else {
+		pathArray := strings.Split(dataPath, "/")
+		mainDir = pathArray[len(pathArray)-1]
+	}
+
+	getBadFileInfos := func(pathStr string, dirEntry fs.DirEntry, err error) error {
+		if dirEntry.Name() == mainDir {
+			// we want to see the contents of this directory
+			return nil
+		}
+
+		if dirEntry.IsDir() {
+			// if the entry is a directory, skip it
+			return fs.SkipDir
+		}
+
+		if err != nil {
+			return err
+		}
+
+		var matched bool
+
+		regExp, err := regexp.Compile(diskQueueName + `.diskqueue.\d\d\d\d\d\d.dat.bad`)
+		if err == nil {
+			matched = regExp.MatchString(dirEntry.Name())
+		} else {
+			matched, _ = regexp.Match(`.diskqueue.\d\d\d\d\d\d.dat.bad`, []byte(dirEntry.Name()))
+		}
+
+		if matched {
+			badFileInfo, e := dirEntry.Info()
+			if e == nil && badFileInfo != nil {
+				badFileDiskSize += badFileInfo.Size()
+			}
+		}
+
+		return nil
+	}
+
+	err := filepath.WalkDir(dataPath, getBadFileInfos)
+	if err != nil {
+		return 0
+	}
+
+	return badFileDiskSize
+}
+
 func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	// write three files
 
@@ -677,9 +734,21 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// there should be no .bad files
+	var badFileDiskSize int64
+	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
+	if badFileDiskSize != 0 {
+		panic("fail")
+	}
+
 	// make 2 bad files
-	createBadFile(dqName, tmpDir, 0, 1533)
+	createBadFile(dqName, tmpDir, 0, 1503)
 	createBadFile(dqName, tmpDir, 1, 1032)
+
+	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
+	if badFileDiskSize != 2535 {
+		panic("fail")
+	}
 
 	dq := NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 0, 1<<12, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
@@ -687,29 +756,40 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	msgSize := 1000
 	msg := make([]byte, msgSize)
 
-	// file size: 1533
+	// file size: 1497
 	dq.Put(msg)
-	dq.Put(make([]byte, 517))
+	dq.Put(make([]byte, 481))
+
+	// no bad files should have been deleted
+	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
+	if badFileDiskSize != 2535 {
+		panic("fail")
+	}
 
 	// file size: 1032
 	dq.Put(msg)
 	dq.Put(make([]byte, 16))
 
+	// one .bad file should be deleted in order to make space
+	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
+	if badFileDiskSize != 1032 {
+		panic("fail")
+	}
+
 	// file size: 1512
 	dq.Put(make([]byte, 1500))
 
-	// read two files
-	<-dq.ReadChan()
-	<-dq.ReadChan()
-
-	<-dq.ReadChan()
-	<-dq.ReadChan()
+	// check if the .bad files were deleted
+	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
+	if badFileDiskSize != 0 {
+		panic("fail")
+	}
 
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
-		if d.depth == 1 &&
-			d.writeBytes == 1512 &&
-			d.readFileNum == 2 &&
+		if d.depth == 5 &&
+			d.writeBytes == 4041 &&
+			d.readFileNum == 0 &&
 			d.writeFileNum == 3 &&
 			d.readMessages == 0 &&
 			d.writeMessages == 0 &&
