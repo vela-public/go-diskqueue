@@ -251,7 +251,6 @@ func TestDiskQueueCorruption(t *testing.T) {
 
 type md struct {
 	depth         int64
-	writeBytes    int64
 	readFileNum   int64
 	writeFileNum  int64
 	readMessages  int64
@@ -260,7 +259,7 @@ type md struct {
 	writePos      int64
 }
 
-func readMetaDataFile(fileName string, retried int, diskLimitFeatIsOn bool) md {
+func readMetaDataFile(fileName string, retried int, enableDiskLimitation bool) md {
 	f, err := os.OpenFile(fileName, os.O_RDONLY, 0600)
 	if err != nil {
 		// provide a simple retry that results in up to
@@ -268,19 +267,18 @@ func readMetaDataFile(fileName string, retried int, diskLimitFeatIsOn bool) md {
 		if retried < 9 {
 			retried++
 			time.Sleep(50 * time.Millisecond)
-			return readMetaDataFile(fileName, retried, diskLimitFeatIsOn)
+			return readMetaDataFile(fileName, retried, enableDiskLimitation)
 		}
 		panic(err)
 	}
 	defer f.Close()
 
 	var ret md
-
-	if diskLimitFeatIsOn {
-		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
+	if enableDiskLimitation {
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			&ret.depth,
 			&ret.readFileNum, &ret.readMessages, &ret.readPos,
-			&ret.writeBytes, &ret.writeFileNum, &ret.writeMessages, &ret.writePos)
+			&ret.writeFileNum, &ret.writeMessages, &ret.writePos)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
 			&ret.depth,
@@ -350,7 +348,7 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 		panic(err)
 	}
 	defer os.RemoveAll(tmpDir)
-	dq := NewWithDiskSpace(dqName, tmpDir, 1<<11, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	dq := NewWithDiskSize(dqName, tmpDir, 1<<11, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
 	msgSize := 1000
@@ -360,7 +358,6 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
-			d.writeBytes == 1004 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
 			d.readMessages == 0 &&
@@ -381,7 +378,6 @@ next:
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
-			d.writeBytes == 2008 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
 			d.readMessages == 1 &&
@@ -434,9 +430,7 @@ completeReadFile:
 		// test that read position and messages reset when a file is completely read
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
-		t.Logf("Write bytes: %d", d.writeBytes)
 		if d.depth == 1 &&
-			d.writeBytes == 1004 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 1 &&
 			d.readMessages == 0 &&
