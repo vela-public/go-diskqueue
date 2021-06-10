@@ -547,16 +547,8 @@ func (d *diskQueue) freeUpDiskSpace() error {
 	badFileExists := false
 
 	// delete .bad files before deleting non-corrupted files (i.e. readFile)
-	if d.badBytes != 0 {
+	if d.badBytes > 0 {
 		badFileInfos := d.getAllBadFileInfo()
-
-		// if badBytes is negative, something went wrong, so recalculate total .bad files size
-		if d.badBytes < 0 {
-			d.badBytes = 0
-			for _, badFileInfo := range badFileInfos {
-				d.badBytes += badFileInfo.Size()
-			}
-		}
 
 		// check if a .bad file exists. If it does, delete that first
 		if badFileInfos != nil {
@@ -572,7 +564,8 @@ func (d *diskQueue) freeUpDiskSpace() error {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
 			}
 		} else {
-			// there are no bad files
+			// we overestimated the size of some .bad files and removed too much from writeBytes
+			d.writeBytes += d.badBytes
 			d.badBytes = 0
 		}
 	}
