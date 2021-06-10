@@ -562,6 +562,7 @@ func (d *diskQueue) freeUpDiskSpace() error {
 				d.badBytes -= oldestBadFileInfo.Size()
 			} else {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
+				return err
 			}
 		} else {
 			// we overestimated the size of some .bad files and removed too much from writeBytes
