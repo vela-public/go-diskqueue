@@ -521,7 +521,7 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 		if err == nil {
 			matched = regExp.MatchString(dirEntry.Name())
 		} else {
-			matched, _ = regexp.Match(`.diskqueue.\d\d\d\d\d\d.dat.bad`, []byte(dirEntry.Name()))
+			matched, _ = regexp.MatchString(`.diskqueue.\d\d\d\d\d\d.dat.bad`, dirEntry.Name())
 		}
 
 		if matched {
