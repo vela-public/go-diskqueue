@@ -923,6 +923,9 @@ func (d *diskQueue) handleReadError() {
 		var badFileSize int64
 		if d.readFileNum == d.writeFileNum {
 			badFileSize = d.writeBytes
+
+			// we moved on to the next writeFile
+			d.writeMessages = 0
 		} else {
 			var stat os.FileInfo
 			stat, err = os.Stat(badRenameFn)
@@ -936,6 +939,8 @@ func (d *diskQueue) handleReadError() {
 
 		d.badBytes += badFileSize
 		d.writeBytes -= badFileSize
+
+		d.readMessages = 0
 	}
 
 	d.readFileNum++
