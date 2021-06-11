@@ -234,6 +234,11 @@ func TestDiskQueueCorruption(t *testing.T) {
 		Equal(t, msg, <-dq.ReadChan())
 	}
 
+	badFilesCount := numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 1 {
+		panic("fail")
+	}
+
 	// corrupt the 4th (current) file
 	dqFn = dq.(*diskQueue).fileName(3)
 	os.Truncate(dqFn, 100)
@@ -241,6 +246,10 @@ func TestDiskQueueCorruption(t *testing.T) {
 	dq.Put(msg) // in 5th file
 
 	Equal(t, msg, <-dq.ReadChan())
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 2 {
+		panic("fail")
+	}
 
 	// write a corrupt (len 0) message at the 5th (current) file
 	dq.(*diskQueue).writeFile.Write([]byte{0, 0, 0, 0})
@@ -250,6 +259,10 @@ func TestDiskQueueCorruption(t *testing.T) {
 	dq.Put(msg)
 
 	Equal(t, msg, <-dq.ReadChan())
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 3 {
+		panic("fail")
+	}
 }
 
 type md struct {
@@ -669,8 +682,8 @@ func createBadFile(dqName string, filePath string, fileNum int64, numBytes int) 
 	return err
 }
 
-func totalBadFileDiskSize(diskQueueName string, dataPath string) int64 {
-	var badFileDiskSize int64
+func numberOfBadFiles(diskQueueName string, dataPath string) int64 {
+	var badFilesCount int64
 
 	// the directory containing DiskQueue files
 	var mainDir string
@@ -706,10 +719,7 @@ func totalBadFileDiskSize(diskQueueName string, dataPath string) int64 {
 		}
 
 		if matched {
-			badFileInfo, e := dirEntry.Info()
-			if e == nil && badFileInfo != nil {
-				badFileDiskSize += badFileInfo.Size()
-			}
+			badFilesCount++
 		}
 
 		return nil
@@ -720,7 +730,7 @@ func totalBadFileDiskSize(diskQueueName string, dataPath string) int64 {
 		return 0
 	}
 
-	return badFileDiskSize
+	return badFilesCount
 }
 
 func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
@@ -735,9 +745,9 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// there should be no .bad files
-	var badFileDiskSize int64
-	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
-	if badFileDiskSize != 0 {
+	var badFilesCount int64
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
 		panic("fail")
 	}
 
@@ -745,43 +755,43 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	createBadFile(dqName, tmpDir, 0, 1503)
 	createBadFile(dqName, tmpDir, 1, 1032)
 
-	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
-	if badFileDiskSize != 2535 {
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 2 {
 		panic("fail")
 	}
 
-	dq := NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 0, 1<<12, 2500, 50*time.Millisecond, l)
+	dq := NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 10, 1600, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
 	msgSize := 1000
 	msg := make([]byte, msgSize)
 
-	// file size: 1497
+	// file 0 size: 1497
 	dq.Put(msg)
 	dq.Put(make([]byte, 481))
 
 	// no bad files should have been deleted
-	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
-	if badFileDiskSize != 2535 {
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 2 {
 		panic("fail")
 	}
 
-	// file size: 1032
+	// file 1 size: 1032
 	dq.Put(msg)
 	dq.Put(make([]byte, 16))
 
 	// one .bad file should be deleted in order to make space
-	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
-	if badFileDiskSize != 1032 {
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 1 {
 		panic("fail")
 	}
 
-	// file size: 1512
+	// file 2 size: 1512
 	dq.Put(make([]byte, 1500))
 
 	// check if the .bad files were deleted
-	badFileDiskSize = totalBadFileDiskSize(dqName, tmpDir)
-	if badFileDiskSize != 0 {
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
 		panic("fail")
 	}
 
@@ -795,6 +805,41 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 			d.writeMessages == 0 &&
 			d.readPos == 0 &&
 			d.writePos == 0 {
+			// success
+			goto corruptFiles
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+corruptFiles:
+	// test removeReadFile when file is corrupted
+	// create bad files see if writebytes is updated properly
+	// check that after corrupting files, we make space appropriately
+
+	// corrupt file 0
+	dqFn := dq.(*diskQueue).fileName(0)
+	os.Truncate(dqFn, 1017) // 1 valid message, 1 corrupted message
+
+	// when making space check that writeBytes is what it should be and that there are no .bad files
+	// this checks that disk limit check turns it into a .bad file
+	dq.Put(make([]byte, 100))
+
+	// check if the .bad files were deleted
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
+		panic("fail")
+	}
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.writeBytes == 3121 &&
+			d.readFileNum == 1 &&
+			d.writeFileNum == 3 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 104 {
 			// success
 			goto done
 		}
