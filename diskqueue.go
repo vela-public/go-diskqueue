@@ -478,8 +478,6 @@ func (d *diskQueue) removeReadFile() error {
 		return err
 	}
 
-	d.logf(DEBUG, "messages in file: %d", totalMessages)
-
 	// update depth with the remaining number of messages
 	d.depth -= totalMessages - d.readMessages
 
@@ -934,7 +932,6 @@ func (d *diskQueue) handleReadError() {
 			// we moved on to the next writeFile
 			d.writeMessages = 0
 		}
-		d.logf(DEBUG, "estimated file size: %d", d.maxBytesPerFile)
 
 		// use lower estimate of file size
 		d.badBytes += d.maxBytesPerFile
