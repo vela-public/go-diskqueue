@@ -179,9 +179,7 @@ func (d *diskQueue) start() {
 
 	// get the size of all the .bad files
 	badFileInfos := d.getAllBadFileInfo()
-	for _, badFileInfo := range badFileInfos {
-		d.badBytes += badFileInfo.Size()
-	}
+	d.badBytes = int64(len(badFileInfos)) * d.maxBytesPerFile
 
 	go d.ioLoop()
 }
@@ -559,14 +557,17 @@ func (d *diskQueue) freeUpDiskSpace() error {
 
 			err = os.Remove(badFileFilePath)
 			if err == nil {
-				d.badBytes -= oldestBadFileInfo.Size()
+				if d.badBytes == d.maxBytesPerFile {
+					// recalculate estimate
+					d.badBytes = int64(len(badFileInfos)-1) * d.maxBytesPerFile
+				} else {
+					d.badBytes -= d.maxBytesPerFile
+				}
 			} else {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
 				return err
 			}
 		} else {
-			// we overestimated the size of some .bad files and removed too much from writeBytes
-			d.writeBytes += d.badBytes
 			d.badBytes = 0
 		}
 	}
@@ -921,25 +922,14 @@ func (d *diskQueue) handleReadError() {
 	}
 
 	if d.enableDiskLimitation {
-		var badFileSize int64
 		if d.readFileNum == d.writeFileNum {
-			badFileSize = d.writeBytes
-
 			// we moved on to the next writeFile
 			d.writeMessages = 0
-		} else {
-			var stat os.FileInfo
-			stat, err = os.Stat(badRenameFn)
-			if err == nil {
-				badFileSize = stat.Size()
-			} else {
-				// max file size
-				badFileSize = int64(d.maxMsgSize) + d.maxBytesPerFile + 4
-			}
 		}
 
-		d.badBytes += badFileSize
-		d.writeBytes -= badFileSize
+		// use lower estimate of file size
+		d.badBytes += d.maxBytesPerFile
+		d.writeBytes -= d.maxBytesPerFile
 
 		d.readMessages = 0
 	}
