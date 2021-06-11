@@ -888,7 +888,7 @@ func (d *diskQueue) moveToNextReadFile(readFileSize int64) {
 
 func (d *diskQueue) moveForward() {
 	// add bytes for the number of messages and the size of the message
-	readFileSize := int64(d.readMsgSize) + d.readPos + 12
+	readFileSize := int64(d.readMsgSize) + d.readPos + numFileMsgBytes + 4
 	d.depth -= 1
 
 	if d.enableDiskLimitation {
