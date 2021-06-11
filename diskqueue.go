@@ -453,6 +453,19 @@ func (d *diskQueue) removeReadFile() error {
 	}
 	defer closeReadFile()
 
+	// get the size of the file
+	stat, err := d.readFile.Stat()
+	if err != nil {
+		return err
+	}
+	readFileSize := stat.Size()
+
+	if readFileSize < d.maxBytesPerFile {
+		// if this file is corrupted we want to decrement
+		// at least d.maxBytesPerFile from d.writeBytes
+		return errors.New("file(" + d.fileName(d.readFileNum) + ") is corrupted")
+	}
+
 	// read total messages number at the end of the file
 	_, err = d.readFile.Seek(-numFileMsgBytes, 2)
 	if err != nil {
@@ -465,15 +478,10 @@ func (d *diskQueue) removeReadFile() error {
 		return err
 	}
 
+	d.logf(DEBUG, "messages in file: %d", totalMessages)
+
 	// update depth with the remaining number of messages
 	d.depth -= totalMessages - d.readMessages
-
-	// get the size of the file
-	stat, err := d.readFile.Stat()
-	if err != nil {
-		return err
-	}
-	readFileSize := stat.Size()
 
 	// we have not finished reading this file
 	if d.readFileNum == d.nextReadFileNum {
@@ -926,6 +934,7 @@ func (d *diskQueue) handleReadError() {
 			// we moved on to the next writeFile
 			d.writeMessages = 0
 		}
+		d.logf(DEBUG, "estimated file size: %d", d.maxBytesPerFile)
 
 		// use lower estimate of file size
 		d.badBytes += d.maxBytesPerFile
