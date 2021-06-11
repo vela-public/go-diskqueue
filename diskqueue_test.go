@@ -841,11 +841,59 @@ corruptFiles:
 			d.readPos == 0 &&
 			d.writePos == 104 {
 			// success
-			goto done
+			goto readCorruptedFile
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	panic("fail")
+
+readCorruptedFile:
+
+	// test handleReadError
+	// corrupt file 2
+	// have readOne turn it into a bad file and then try to make space
+	dqFn = dq.(*diskQueue).fileName(2)
+	t.Logf("Filename: %s", dqFn)
+	os.Truncate(dqFn, 50)
+
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+
+	<-dq.ReadChan()
+	// check if the file was converted into a .bad file
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 1 {
+		t.Logf("Bad files count: %d", badFilesCount)
+		panic("fail")
+	}
+
+	dq.Put(msg)
+	// check if the corrupted file was deleted to make space
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
+		t.Logf("Bad files count: %d", badFilesCount)
+		panic("fail")
+	}
+	// t.Logf("%d, %d, %d, %d, %d, %d, %d, %d", d.depth, d.writeBytes, d.readFileNum, d.writeFileNum, d.readMessages, d.writeMessages, d.readPos, d.writePos)
+
+	t.Log("Already READ")
+	// check if the .bad files were deleted
+	// badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	// if badFilesCount != 0 {
+	// 	panic("fail")
+	// }
+
+	// check writeBytes? break up into several sections?
+
+	// check that as DiskQueue encounters more corrupt files, the size of the corrupt files never surpass
+	// the disk size limit
+
+	// check writeBytes
+	goto done
+
+	// add a message
+
+	//
 
 done:
 }
