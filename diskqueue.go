@@ -645,7 +645,7 @@ func (d *diskQueue) checkTailCorruption(depth int64) {
 
 func (d *diskQueue) moveForward() {
 	// add bytes for the number of messages and the size of the message
-	readFileSize := int64(d.readMsgSize) + d.readPos + 12
+	readFileSize := int64(d.readMsgSize) + d.readPos + numFileMsgsBytes + 4
 
 	oldReadFileNum := d.readFileNum
 	d.readFileNum = d.nextReadFileNum
