@@ -711,11 +711,11 @@ func numberOfBadFiles(diskQueueName string, dataPath string) int64 {
 
 		var matched bool
 
-		regExp, err := regexp.Compile(diskQueueName + `.diskqueue.\d\d\d\d\d\d.dat.bad`)
+		regExp, _ := regexp.Compile(`^` + diskQueueName + `.diskqueue.\d\d\d\d\d\d.dat.bad$`)
 		if err == nil {
 			matched = regExp.MatchString(dirEntry.Name())
 		} else {
-			matched, _ = regexp.Match(`.diskqueue.\d\d\d\d\d\d.dat.bad`, []byte(dirEntry.Name()))
+			fmt.Println("Error:", err)
 		}
 
 		if matched {
@@ -813,6 +813,7 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	panic("fail")
 
 corruptFiles:
+	t.Log("CORRUPT")
 	// test removeReadFile when file is corrupted
 	// create bad files see if writebytes is updated properly
 	// check that after corrupting files, we make space appropriately
@@ -833,7 +834,8 @@ corruptFiles:
 
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
-		if d.writeBytes == 3121 &&
+		t.Log(d.writeBytes, d.readFileNum, d.writeFileNum, d.readMessages, d.writeMessages)
+		if d.writeBytes == 2648 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 3 &&
 			d.readMessages == 0 &&
@@ -845,7 +847,7 @@ corruptFiles:
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	panic("fail")
+	panic("fail3")
 
 readCorruptedFile:
 	// test handleReadError
@@ -853,7 +855,7 @@ readCorruptedFile:
 	// there should be no "bad" files at this point
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 0 {
-		panic("fail")
+		panic("fail1-")
 	}
 
 	// corrupt file 2
@@ -871,28 +873,32 @@ readCorruptedFile:
 	// check if the file was converted into a .bad file
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 1 {
-		panic("fail")
+		panic("fail2-")
 	}
 
 	// go over the disk limit
+	dq.Put(msg)
+
 	dq.Put(msg)
 	dq.Put(msg)
 
 	// check if the corrupted file was deleted to make space
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 0 {
-		panic("fail")
+		t.Log("BAD FILE COUNT:", badFilesCount)
+		panic("fail3-")
 	}
 
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
-		if d.writeBytes == 3081 &&
+		t.Log(d.writeBytes, d.readFileNum, d.writeFileNum, d.readMessages, d.writeMessages)
+		if d.writeBytes == 3132 &&
 			d.readFileNum == 3 &&
-			d.writeFileNum == 4 &&
+			d.writeFileNum == 5 &&
 			d.readMessages == 0 &&
-			d.writeMessages == 1 &&
+			d.writeMessages == 0 &&
 			d.readPos == 0 &&
-			d.writePos == 1004 {
+			d.writePos == 0 {
 			// success
 			goto done
 		}

@@ -86,7 +86,6 @@ type diskQueue struct {
 	syncTimeout         time.Duration // duration of time per fsync
 	exitFlag            int32
 	needSync            bool
-	badBytes            int64
 
 	// keeps track of the position where we have read
 	// (but not yet sent over readChan)
@@ -176,10 +175,6 @@ func (d *diskQueue) start() {
 	if err != nil && !os.IsNotExist(err) {
 		d.logf(ERROR, "DISKQUEUE(%s) failed to retrieveMetaData - %s", d.name, err)
 	}
-
-	// get the size of all the .bad files
-	badFileInfos := d.getAllBadFileInfo()
-	d.badBytes = int64(len(badFileInfos)) * d.maxBytesPerFile
 
 	go d.ioLoop()
 }
@@ -453,19 +448,6 @@ func (d *diskQueue) removeReadFile() error {
 	}
 	defer closeReadFile()
 
-	// get the size of the file
-	stat, err := d.readFile.Stat()
-	if err != nil {
-		return err
-	}
-	readFileSize := stat.Size()
-
-	if readFileSize < d.maxBytesPerFile {
-		// if this file is corrupted we want to decrement
-		// at least d.maxBytesPerFile from d.writeBytes
-		return errors.New("file(" + d.fileName(d.readFileNum) + ") is corrupted")
-	}
-
 	// read total messages number at the end of the file
 	_, err = d.readFile.Seek(-numFileMsgBytes, 2)
 	if err != nil {
@@ -487,7 +469,7 @@ func (d *diskQueue) removeReadFile() error {
 		d.nextReadPos = 0
 	}
 
-	d.moveToNextReadFile(readFileSize)
+	d.moveToNextReadFile()
 
 	return nil
 }
@@ -519,16 +501,9 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 			return err
 		}
 
-		var matched bool
+		regExp, _ := regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat.bad$`)
 
-		regExp, err := regexp.Compile(d.name + `.diskqueue.\d\d\d\d\d\d.dat.bad`)
-		if err == nil {
-			matched = regExp.MatchString(dirEntry.Name())
-		} else {
-			matched, _ = regexp.MatchString(`.diskqueue.\d\d\d\d\d\d.dat.bad`, dirEntry.Name())
-		}
-
-		if matched {
+		if regExp.MatchString(dirEntry.Name()) {
 			badFileInfo, e := dirEntry.Info()
 			if e == nil && badFileInfo != nil {
 				badFileInfos = append(badFileInfos, badFileInfo)
@@ -544,55 +519,6 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 	}
 
 	return badFileInfos
-}
-
-func (d *diskQueue) freeUpDiskSpace() error {
-	var err error
-	badFileExists := false
-
-	// delete .bad files before deleting non-corrupted files (i.e. readFile)
-	if d.badBytes > 0 {
-		badFileInfos := d.getAllBadFileInfo()
-
-		// check if a .bad file exists. If it does, delete that first
-		if badFileInfos != nil {
-			badFileExists = true
-
-			oldestBadFileInfo := badFileInfos[0]
-			badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
-
-			err = os.Remove(badFileFilePath)
-			if err == nil {
-				if d.badBytes == d.maxBytesPerFile {
-					// recalculate estimate
-					d.badBytes = int64(len(badFileInfos)-1) * d.maxBytesPerFile
-				} else {
-					d.badBytes -= d.maxBytesPerFile
-				}
-			} else {
-				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
-				return err
-			}
-		} else {
-			d.badBytes = 0
-		}
-	}
-
-	if !badFileExists {
-		// delete the read file (make space)
-		if d.readFileNum == d.writeFileNum {
-			d.skipToNextRWFile()
-		} else {
-			err = d.removeReadFile()
-			if err != nil {
-				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(d.readFileNum), err)
-				d.handleReadError()
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 // writeOne performs a low level filesystem write for a single []byte
@@ -647,9 +573,45 @@ func (d *diskQueue) writeOne(data []byte) error {
 		// check if we have enough space to write this message
 		metaDataFileSize := d.metaDataFileSize()
 
+		// get total disk space of bad files
+		var badFilesSize int64
+		badFileInfos := d.getAllBadFileInfo()
+		for _, badFileInfo := range badFileInfos {
+			badFilesSize += badFileInfo.Size()
+		}
+
 		// keep freeing up disk space until we have enough space to write this message
-		for d.badBytes+metaDataFileSize+d.writeBytes+expectedBytesIncrease > d.maxBytesDiskSpace {
-			d.freeUpDiskSpace()
+		for badFilesSize+metaDataFileSize+d.writeBytes+expectedBytesIncrease > d.maxBytesDiskSpace {
+			if badFilesSize > 0 {
+				// check if a .bad file exists. If it does, delete that first
+				oldestBadFileInfo := badFileInfos[0]
+				badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
+
+				err = os.Remove(badFileFilePath)
+				if err != nil {
+					d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
+					return err
+				} else {
+					// recaclulate total bad files disk size
+					badFileInfos = d.getAllBadFileInfo()
+					badFilesSize = 0
+					for _, badFileInfo := range badFileInfos {
+						badFilesSize += badFileInfo.Size()
+					}
+				}
+			} else {
+				// delete the read file (make space)
+				if d.readFileNum == d.writeFileNum {
+					d.skipToNextRWFile()
+				} else {
+					err = d.removeReadFile()
+					if err != nil {
+						d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(d.readFileNum), err)
+						d.handleReadError()
+						return err
+					}
+				}
+			}
 		}
 	} else if d.writePos+totalBytes >= d.maxBytesPerFile {
 		reachedFileSizeLimit = true
@@ -862,7 +824,48 @@ func (d *diskQueue) checkTailCorruption(depth int64) {
 	}
 }
 
-func (d *diskQueue) moveToNextReadFile(readFileSize int64) {
+func (d *diskQueue) updateWriteBytes() {
+	d.writeBytes = 0
+
+	// the directory containing DiskQueue files
+	var mainDir string
+	if d.dataPath == "/" {
+		mainDir = d.dataPath
+	} else {
+		pathArray := strings.Split(d.dataPath, "/")
+		mainDir = pathArray[len(pathArray)-1]
+	}
+
+	getWriteBytes := func(pathStr string, dirEntry fs.DirEntry, err error) error {
+		if dirEntry.Name() == mainDir {
+			// we want to see the contents of this directory
+			return nil
+		}
+
+		if dirEntry.IsDir() {
+			// if the entry is a directory, skip it
+			return fs.SkipDir
+		}
+
+		if err != nil {
+			return err
+		}
+
+		regExp, _ := regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat$`)
+		if regExp.MatchString(dirEntry.Name()) {
+			fileInfo, e := dirEntry.Info()
+			if e == nil && fileInfo != nil {
+				d.writeBytes += fileInfo.Size()
+			}
+		}
+
+		return nil
+	}
+
+	filepath.WalkDir(d.dataPath, getWriteBytes)
+}
+
+func (d *diskQueue) moveToNextReadFile() {
 	oldReadFileNum := d.readFileNum
 	d.readFileNum = d.nextReadFileNum
 	d.readPos = d.nextReadPos
@@ -881,21 +884,19 @@ func (d *diskQueue) moveToNextReadFile(readFileSize int64) {
 
 		if d.enableDiskLimitation {
 			d.readMessages = 0
-			d.writeBytes -= readFileSize
+			d.updateWriteBytes()
 		}
 	}
 }
 
 func (d *diskQueue) moveForward() {
-	// add bytes for the number of messages and the size of the message
-	readFileSize := int64(d.readMsgSize) + d.readPos + numFileMsgBytes + 4
 	d.depth -= 1
 
 	if d.enableDiskLimitation {
 		d.readMessages += 1
 	}
 
-	d.moveToNextReadFile(readFileSize)
+	d.moveToNextReadFile()
 
 	d.checkTailCorruption(d.depth)
 }
@@ -930,12 +931,11 @@ func (d *diskQueue) handleReadError() {
 	if d.enableDiskLimitation {
 		if d.readFileNum == d.writeFileNum {
 			// we moved on to the next writeFile
+			d.writeBytes = 0
 			d.writeMessages = 0
+		} else {
+			d.updateWriteBytes()
 		}
-
-		// use lower estimate of file size
-		d.badBytes += d.maxBytesPerFile
-		d.writeBytes -= d.maxBytesPerFile
 
 		d.readMessages = 0
 	}
