@@ -848,52 +848,57 @@ corruptFiles:
 	panic("fail")
 
 readCorruptedFile:
-
 	// test handleReadError
+
+	// there should be no "bad" files at this point
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
+		panic("fail")
+	}
+
 	// corrupt file 2
 	// have readOne turn it into a bad file and then try to make space
 	dqFn = dq.(*diskQueue).fileName(2)
-	t.Logf("Filename: %s", dqFn)
-	os.Truncate(dqFn, 50)
+	os.Truncate(dqFn, 1020)
 
+	// read file 1
 	<-dq.ReadChan()
 	<-dq.ReadChan()
 
-	<-dq.ReadChan()
+	// wait for DiskQueue to notice that file 2 is corrupted
+	time.Sleep(20 * time.Millisecond)
+
 	// check if the file was converted into a .bad file
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 1 {
-		t.Logf("Bad files count: %d", badFilesCount)
 		panic("fail")
 	}
 
+	// go over the disk limit
 	dq.Put(msg)
+	dq.Put(msg)
+
 	// check if the corrupted file was deleted to make space
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 0 {
-		t.Logf("Bad files count: %d", badFilesCount)
 		panic("fail")
 	}
-	// t.Logf("%d, %d, %d, %d, %d, %d, %d, %d", d.depth, d.writeBytes, d.readFileNum, d.writeFileNum, d.readMessages, d.writeMessages, d.readPos, d.writePos)
 
-	t.Log("Already READ")
-	// check if the .bad files were deleted
-	// badFilesCount = numberOfBadFiles(dqName, tmpDir)
-	// if badFilesCount != 0 {
-	// 	panic("fail")
-	// }
-
-	// check writeBytes? break up into several sections?
-
-	// check that as DiskQueue encounters more corrupt files, the size of the corrupt files never surpass
-	// the disk size limit
-
-	// check writeBytes
-	goto done
-
-	// add a message
-
-	//
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.writeBytes == 3081 &&
+			d.readFileNum == 3 &&
+			d.writeFileNum == 4 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 1004 {
+			// success
+			goto done
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
 
 done:
 }
