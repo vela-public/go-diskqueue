@@ -318,6 +318,7 @@ func (d *diskQueue) skipToNextRWFile() error {
 // while advancing read positions and rolling files, if necessary
 func (d *diskQueue) readOne() ([]byte, error) {
 	var err error
+	var msgSize int32
 
 	if d.readFile == nil {
 		curFileName := d.fileName(d.readFileNum)
@@ -354,22 +355,24 @@ func (d *diskQueue) readOne() ([]byte, error) {
 		d.reader = bufio.NewReader(d.readFile)
 	}
 
-	err = binary.Read(d.reader, binary.BigEndian, &d.readMsgSize)
+	err = binary.Read(d.reader, binary.BigEndian, &msgSize)
 	if err != nil {
 		d.readFile.Close()
 		d.readFile = nil
 		return nil, err
 	}
 
-	if d.readMsgSize < d.minMsgSize || d.readMsgSize > d.maxMsgSize {
+	if msgSize < d.minMsgSize || msgSize > d.maxMsgSize {
 		// this file is corrupt and we have no reasonable guarantee on
 		// where a new message should begin
 		d.readFile.Close()
 		d.readFile = nil
-		return nil, fmt.Errorf("invalid message read size (%d)", d.readMsgSize)
+		return nil, fmt.Errorf("invalid message read size (%d)", msgSize)
 	}
 
-	readBuf := make([]byte, d.readMsgSize)
+	d.readMsgSize = msgSize
+
+	readBuf := make([]byte, msgSize)
 	_, err = io.ReadFull(d.reader, readBuf)
 	if err != nil {
 		d.readFile.Close()
@@ -377,7 +380,7 @@ func (d *diskQueue) readOne() ([]byte, error) {
 		return nil, err
 	}
 
-	totalBytes := int64(4 + d.readMsgSize)
+	totalBytes := int64(4 + msgSize)
 
 	// we only advance next* because we have not yet sent this to consumers
 	// (where readFileNum, readPos will actually be advanced)
