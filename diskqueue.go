@@ -431,6 +431,11 @@ func (d *diskQueue) metaDataFileSize() int64 {
 func (d *diskQueue) removeReadFile() error {
 	var err error
 
+	if d.readFileNum == d.writeFileNum {
+		d.skipToNextRWFile()
+		return nil
+	}
+
 	if d.readFile == nil {
 		curFileName := d.fileName(d.readFileNum)
 
@@ -561,6 +566,62 @@ func (d *diskQueue) updateWriteBytes() {
 	d.walkDiskQueueDir(updateWriteBytes)
 }
 
+func (d *diskQueue) freeUpDiskSpace(totalBytes int64, reachedFileSizeLimit bool) error {
+	var err error
+
+	expectedBytesIncrease := totalBytes
+	if reachedFileSizeLimit {
+		expectedBytesIncrease += numFileMsgBytes
+	}
+
+	// If the data to be written is bigger than the disk size limit, do not write
+	if expectedBytesIncrease > d.maxBytesDiskSpace {
+		return errors.New("message size surpasses disk size limit")
+	}
+
+	// check if we have enough space to write this message
+	metaDataFileSize := d.metaDataFileSize()
+
+	// get total disk space of bad files
+	var badFilesSize int64
+	badFileInfos := d.getAllBadFileInfo()
+	for _, badFileInfo := range badFileInfos {
+		badFilesSize += badFileInfo.Size()
+	}
+
+	// keep freeing up disk space until we have enough space to write this message
+	for badFilesSize+metaDataFileSize+d.writeBytes+expectedBytesIncrease > d.maxBytesDiskSpace {
+		if badFilesSize > 0 {
+			// check if a .bad file exists. If it does, delete that first
+			oldestBadFileInfo := badFileInfos[0]
+			badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
+
+			err = os.Remove(badFileFilePath)
+			if err != nil {
+				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
+				return err
+			} else {
+				// recaclulate total bad files disk size
+				badFileInfos = d.getAllBadFileInfo()
+				badFilesSize = 0
+				for _, badFileInfo := range badFileInfos {
+					badFilesSize += badFileInfo.Size()
+				}
+			}
+		} else {
+			// delete the read file (make space)
+			err = d.removeReadFile()
+			if err != nil {
+				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(d.readFileNum), err)
+				d.handleReadError()
+				return err
+
+			}
+		}
+	}
+	return nil
+}
+
 // writeOne performs a low level filesystem write for a single []byte
 // while advancing write positions and rolling files, if necessary
 func (d *diskQueue) writeOne(data []byte) error {
@@ -600,59 +661,8 @@ func (d *diskQueue) writeOne(data []byte) error {
 			reachedFileSizeLimit = true
 		}
 
-		expectedBytesIncrease := totalBytes
-		if reachedFileSizeLimit {
-			expectedBytesIncrease += numFileMsgBytes
-		}
-
-		// If the data to be written is bigger than the disk size limit, do not write
-		if expectedBytesIncrease > d.maxBytesDiskSpace {
-			return errors.New("message size surpasses disk size limit")
-		}
-
-		// check if we have enough space to write this message
-		metaDataFileSize := d.metaDataFileSize()
-
-		// get total disk space of bad files
-		var badFilesSize int64
-		badFileInfos := d.getAllBadFileInfo()
-		for _, badFileInfo := range badFileInfos {
-			badFilesSize += badFileInfo.Size()
-		}
-
-		// keep freeing up disk space until we have enough space to write this message
-		for badFilesSize+metaDataFileSize+d.writeBytes+expectedBytesIncrease > d.maxBytesDiskSpace {
-			if badFilesSize > 0 {
-				// check if a .bad file exists. If it does, delete that first
-				oldestBadFileInfo := badFileInfos[0]
-				badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
-
-				err = os.Remove(badFileFilePath)
-				if err != nil {
-					d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
-					return err
-				} else {
-					// recaclulate total bad files disk size
-					badFileInfos = d.getAllBadFileInfo()
-					badFilesSize = 0
-					for _, badFileInfo := range badFileInfos {
-						badFilesSize += badFileInfo.Size()
-					}
-				}
-			} else {
-				// delete the read file (make space)
-				if d.readFileNum == d.writeFileNum {
-					d.skipToNextRWFile()
-				} else {
-					err = d.removeReadFile()
-					if err != nil {
-						d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(d.readFileNum), err)
-						d.handleReadError()
-						return err
-					}
-				}
-			}
-		}
+		// free disk space if needed
+		d.freeUpDiskSpace(totalBytes, reachedFileSizeLimit)
 	} else if d.writePos+totalBytes >= d.maxBytesPerFile {
 		reachedFileSizeLimit = true
 	}
