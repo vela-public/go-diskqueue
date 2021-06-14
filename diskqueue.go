@@ -719,7 +719,7 @@ func (d *diskQueue) handleReadError() {
 				badFileSize = stat.Size()
 			} else {
 				// max file size
-				badFileSize = int64(d.maxMsgSize) + d.maxBytesPerFile + 4
+				badFileSize = int64(d.maxMsgSize) + d.maxBytesPerFile + 4 + numFileMsgsBytes
 			}
 		}
 
