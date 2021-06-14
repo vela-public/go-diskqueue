@@ -65,6 +65,7 @@ type diskQueue struct {
 	writeFileNum  int64
 	readMessages  int64
 	writeMessages int64
+	writeBytes    int64
 	depth         int64
 
 	sync.RWMutex
@@ -86,6 +87,10 @@ type diskQueue struct {
 	// (but not yet sent over readChan)
 	nextReadPos     int64
 	nextReadFileNum int64
+
+	// keep track of the msg size we have read
+	// (but not yet sent over readChan)
+	readMsgSize int32
 
 	readFile  *os.File
 	writeFile *os.File
@@ -299,8 +304,12 @@ func (d *diskQueue) skipToNextRWFile() error {
 	d.nextReadFileNum = d.writeFileNum
 	d.nextReadPos = 0
 	d.depth = 0
-	d.readMessages = 0
-	d.writeMessages = 0
+
+	if d.enableDiskLimitation {
+		d.writeBytes = 0
+		d.readMessages = 0
+		d.writeMessages = 0
+	}
 
 	return err
 }
@@ -360,6 +369,8 @@ func (d *diskQueue) readOne() ([]byte, error) {
 		d.readFile = nil
 		return nil, fmt.Errorf("invalid message read size (%d)", msgSize)
 	}
+
+	d.readMsgSize = msgSize
 
 	readBuf := make([]byte, msgSize)
 	_, err = io.ReadFull(d.reader, readBuf)
@@ -462,6 +473,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 	if d.enableDiskLimitation {
 		// save space for the number of messages in this file
 		fileSize += numFileMsgsBytes
+		d.writeBytes += totalBytes
 		d.writeMessages += 1
 	}
 
@@ -472,7 +484,12 @@ func (d *diskQueue) writeOne(data []byte) error {
 
 		d.writeFileNum++
 		d.writePos = 0
-		d.writeMessages = 0
+
+		if d.enableDiskLimitation {
+			// add bytes for the number of messages in the file
+			d.writeBytes += numFileMsgsBytes
+			d.writeMessages = 0
+		}
 
 		// sync every time we start writing to a new file
 		err = d.sync()
@@ -523,10 +540,10 @@ func (d *diskQueue) retrieveMetaData() error {
 
 	// if user is using disk size limit feature
 	if d.enableDiskLimitation {
-		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			&d.depth,
 			&d.readFileNum, &d.readMessages, &d.readPos,
-			&d.writeFileNum, &d.writeMessages, &d.writePos)
+			&d.writeBytes, &d.writeFileNum, &d.writeMessages, &d.writePos)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
 			&d.depth,
@@ -560,10 +577,10 @@ func (d *diskQueue) persistMetaData() error {
 
 	// if user is using disk size limit feature
 	if d.enableDiskLimitation {
-		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+		_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			d.depth,
 			d.readFileNum, d.readMessages, d.readPos,
-			d.writeFileNum, d.writeMessages, d.writePos)
+			d.writeBytes, d.writeFileNum, d.writeMessages, d.writePos)
 	} else {
 		_, err = fmt.Fprintf(f, "%d\n%d,%d\n%d,%d\n",
 			d.depth,
@@ -630,15 +647,20 @@ func (d *diskQueue) checkTailCorruption(depth int64) {
 }
 
 func (d *diskQueue) moveForward() {
+	// add bytes for the number of messages and the size of the message
+	readFileSize := int64(d.readMsgSize) + d.readPos + numFileMsgsBytes + 4
+
 	oldReadFileNum := d.readFileNum
 	d.readFileNum = d.nextReadFileNum
 	d.readPos = d.nextReadPos
 	d.depth -= 1
-	d.readMessages += 1
+
+	if d.enableDiskLimitation {
+		d.readMessages += 1
+	}
 
 	// see if we need to clean up the old file
 	if oldReadFileNum != d.nextReadFileNum {
-		d.readMessages = 0
 
 		// sync every time we start reading from a new file
 		d.needSync = true
@@ -647,6 +669,11 @@ func (d *diskQueue) moveForward() {
 		err := os.Remove(fn)
 		if err != nil {
 			d.logf(ERROR, "DISKQUEUE(%s) failed to Remove(%s) - %s", d.name, fn, err)
+		}
+
+		if d.enableDiskLimitation {
+			d.readMessages = 0
+			d.writeBytes -= readFileSize
 		}
 	}
 
@@ -679,6 +706,24 @@ func (d *diskQueue) handleReadError() {
 		d.logf(ERROR,
 			"DISKQUEUE(%s) failed to rename bad diskqueue file %s to %s",
 			d.name, badFn, badRenameFn)
+	}
+
+	if d.enableDiskLimitation {
+		var badFileSize int64
+		if d.readFileNum == d.writeFileNum {
+			badFileSize = d.writeBytes
+		} else {
+			var stat os.FileInfo
+			stat, err = os.Stat(badRenameFn)
+			if err == nil {
+				badFileSize = stat.Size()
+			} else {
+				// max file size
+				badFileSize = int64(d.maxMsgSize) + d.maxBytesPerFile + 4 + numFileMsgsBytes
+			}
+		}
+
+		d.writeBytes -= badFileSize
 	}
 
 	d.readFileNum++

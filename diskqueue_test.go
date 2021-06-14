@@ -251,6 +251,7 @@ func TestDiskQueueCorruption(t *testing.T) {
 
 type md struct {
 	depth         int64
+	writeBytes    int64
 	readFileNum   int64
 	writeFileNum  int64
 	readMessages  int64
@@ -275,10 +276,10 @@ func readMetaDataFile(fileName string, retried int, enableDiskLimitation bool) m
 
 	var ret md
 	if enableDiskLimitation {
-		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
 			&ret.depth,
 			&ret.readFileNum, &ret.readMessages, &ret.readPos,
-			&ret.writeFileNum, &ret.writeMessages, &ret.writePos)
+			&ret.writeBytes, &ret.writeFileNum, &ret.writeMessages, &ret.writePos)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
 			&ret.depth,
@@ -358,12 +359,13 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
+			d.writeBytes == 1004 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
-			d.readPos == 0 &&
-			d.writePos == 1004 &&
 			d.readMessages == 0 &&
-			d.writeMessages == 1 {
+			d.writeMessages == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 1004 {
 			// success
 			goto next
 		}
@@ -378,12 +380,13 @@ next:
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
+			d.writeBytes == 2008 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
-			d.readPos == 1004 &&
-			d.writePos == 2008 &&
 			d.readMessages == 1 &&
-			d.writeMessages == 2 {
+			d.writeMessages == 2 &&
+			d.readPos == 1004 &&
+			d.writePos == 2008 {
 			// success
 			goto completeWriteFile
 		}
@@ -405,12 +408,13 @@ completeWriteFile:
 		// test the writeFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 3 &&
+			d.writeBytes == 2048 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 1 &&
-			d.readPos == 1004 &&
-			d.writePos == 0 &&
 			d.readMessages == 1 &&
-			d.writeMessages == 0 {
+			d.writeMessages == 0 &&
+			d.readPos == 1004 &&
+			d.writePos == 0 {
 			// success
 			goto completeReadFile
 		}
@@ -430,12 +434,13 @@ completeReadFile:
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
+			d.writeBytes == 1004 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 1 &&
-			d.readPos == 0 &&
-			d.writePos == 1004 &&
 			d.readMessages == 0 &&
-			d.writeMessages == 1 {
+			d.writeMessages == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 1004 {
 			// success
 			goto completeWriteFileAgain
 		}
@@ -460,12 +465,13 @@ completeWriteFileAgain:
 		// test the writeFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 7 &&
+			d.writeBytes == 5068 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 3 &&
-			d.readPos == 0 &&
-			d.writePos == 0 &&
 			d.readMessages == 0 &&
-			d.writeMessages == 0 {
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 {
 			// success
 			goto completeReadFileAgain
 		}
@@ -488,12 +494,13 @@ completeReadFileAgain:
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 0 &&
+			d.writeBytes == 0 &&
 			d.readFileNum == 3 &&
 			d.writeFileNum == 3 &&
-			d.readPos == 0 &&
-			d.writePos == 0 &&
 			d.readMessages == 0 &&
-			d.writeMessages == 0 {
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 {
 			// success
 			goto done
 		}
