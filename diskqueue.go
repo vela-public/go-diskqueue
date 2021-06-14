@@ -474,9 +474,8 @@ func (d *diskQueue) removeReadFile() error {
 	return nil
 }
 
-func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
-	var badFileInfos []fs.FileInfo
-
+// walk through all of the files in the DiskQueue directory
+func (d *diskQueue) walkDiskQueueDir(fn func(fs.DirEntry) error) error {
 	// the directory containing DiskQueue files
 	var mainDir string
 	if d.dataPath == "/" {
@@ -486,9 +485,9 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 		mainDir = pathArray[len(pathArray)-1]
 	}
 
-	getBadFileInfos := func(pathStr string, dirEntry fs.DirEntry, err error) error {
+	walkDiskQueueDir := func(pathStr string, dirEntry fs.DirEntry, err error) error {
 		if dirEntry.Name() == mainDir {
-			// we want to see the contents of this directory
+			// we want to see the contents of the directory DiskQueue writes and reads in
 			return nil
 		}
 
@@ -501,6 +500,27 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 			return err
 		}
 
+		e := fn(dirEntry)
+		if e != nil {
+			return e
+		}
+
+		return nil
+	}
+
+	err := filepath.WalkDir(d.dataPath, walkDiskQueueDir)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
+	var badFileInfos []fs.FileInfo
+
+	getAllBadFileInfo := func(dirEntry fs.DirEntry) error {
+		// only accept "bad" files created by this DiskQueue object
 		regExp, _ := regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat.bad$`)
 
 		if regExp.MatchString(dirEntry.Name()) {
@@ -513,12 +533,32 @@ func (d *diskQueue) getAllBadFileInfo() []fs.FileInfo {
 		return nil
 	}
 
-	err := filepath.WalkDir(d.dataPath, getBadFileInfos)
+	err := d.walkDiskQueueDir(getAllBadFileInfo)
 	if err != nil {
 		return nil
 	}
 
 	return badFileInfos
+}
+
+// get the accurate total non-"bad" file size
+func (d *diskQueue) updateWriteBytes() {
+	d.writeBytes = 0
+
+	updateWriteBytes := func(dirEntry fs.DirEntry) error {
+		// only accept files created by this DiskQueue object
+		regExp, _ := regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat$`)
+		if regExp.MatchString(dirEntry.Name()) {
+			fileInfo, e := dirEntry.Info()
+			if e == nil && fileInfo != nil {
+				d.writeBytes += fileInfo.Size()
+			}
+		}
+
+		return nil
+	}
+
+	d.walkDiskQueueDir(updateWriteBytes)
 }
 
 // writeOne performs a low level filesystem write for a single []byte
@@ -822,47 +862,6 @@ func (d *diskQueue) checkTailCorruption(depth int64) {
 		d.skipToNextRWFile()
 		d.needSync = true
 	}
-}
-
-func (d *diskQueue) updateWriteBytes() {
-	d.writeBytes = 0
-
-	// the directory containing DiskQueue files
-	var mainDir string
-	if d.dataPath == "/" {
-		mainDir = d.dataPath
-	} else {
-		pathArray := strings.Split(d.dataPath, "/")
-		mainDir = pathArray[len(pathArray)-1]
-	}
-
-	getWriteBytes := func(pathStr string, dirEntry fs.DirEntry, err error) error {
-		if dirEntry.Name() == mainDir {
-			// we want to see the contents of this directory
-			return nil
-		}
-
-		if dirEntry.IsDir() {
-			// if the entry is a directory, skip it
-			return fs.SkipDir
-		}
-
-		if err != nil {
-			return err
-		}
-
-		regExp, _ := regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat$`)
-		if regExp.MatchString(dirEntry.Name()) {
-			fileInfo, e := dirEntry.Info()
-			if e == nil && fileInfo != nil {
-				d.writeBytes += fileInfo.Size()
-			}
-		}
-
-		return nil
-	}
-
-	filepath.WalkDir(d.dataPath, getWriteBytes)
 }
 
 func (d *diskQueue) moveToNextReadFile() {
