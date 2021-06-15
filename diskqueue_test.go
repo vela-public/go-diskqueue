@@ -550,6 +550,7 @@ meetDiskSizeLimit:
 		}
 	}
 
+	// save space for msg len and number of msgs in file
 	diskBytesRemaining := 6040 - metaDataFileSize - (totalDiskBytes + 12)
 	dq.Put(make([]byte, diskBytesRemaining))
 
@@ -709,16 +710,8 @@ func numberOfBadFiles(diskQueueName string, dataPath string) int64 {
 			return err
 		}
 
-		var matched bool
-
 		regExp, _ := regexp.Compile(`^` + diskQueueName + `.diskqueue.\d\d\d\d\d\d.dat.bad$`)
-		if err == nil {
-			matched = regExp.MatchString(dirEntry.Name())
-		} else {
-			fmt.Println("Error:", err)
-		}
-
-		if matched {
+		if regExp.MatchString(dirEntry.Name()) {
 			badFilesCount++
 		}
 
@@ -789,7 +782,7 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	// file 2 size: 1512
 	dq.Put(make([]byte, 1500))
 
-	// check if the .bad files were deleted
+	// check if all the .bad files were deleted
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 0 {
 		panic("fail")
@@ -822,8 +815,6 @@ corruptFiles:
 	dqFn := dq.(*diskQueue).fileName(0)
 	os.Truncate(dqFn, 1017) // 1 valid message, 1 corrupted message
 
-	// when making space check that writeBytes is what it should be and that there are no .bad files
-	// this checks that disk limit check turns it into a .bad file
 	dq.Put(make([]byte, 100))
 
 	// check if the .bad files were deleted
@@ -879,6 +870,7 @@ readCorruptedFile:
 	// go over the disk limit
 	dq.Put(msg)
 
+	// write a complete file
 	dq.Put(msg)
 	dq.Put(msg)
 
