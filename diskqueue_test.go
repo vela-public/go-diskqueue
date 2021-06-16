@@ -838,7 +838,7 @@ corruptFiles:
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	panic("fail3")
+	panic("fail")
 
 readCorruptedFile:
 	// test handleReadError
@@ -846,7 +846,7 @@ readCorruptedFile:
 	// there should be no "bad" files at this point
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 0 {
-		panic("fail1-")
+		panic("fail")
 	}
 
 	// corrupt file 2
@@ -864,7 +864,7 @@ readCorruptedFile:
 	// check if the file was converted into a .bad file
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 1 {
-		panic("fail2-")
+		panic("fail")
 	}
 
 	// go over the disk limit
@@ -878,7 +878,7 @@ readCorruptedFile:
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 0 {
 		t.Log("BAD FILE COUNT:", badFilesCount)
-		panic("fail3-")
+		panic("fail")
 	}
 
 	for i := 0; i < 10; i++ {
