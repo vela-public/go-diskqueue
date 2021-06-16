@@ -31,6 +31,8 @@ const (
 	numFileMsgBytes = 8
 )
 
+var badFileNameRegexp, fileNameRegexp *regexp.Regexp
+
 type AppLogFunc func(lvl LogLevel, f string, args ...interface{})
 
 func (l LogLevel) String() string {
@@ -171,6 +173,9 @@ func (d *diskQueue) start() {
 	if err != nil && !os.IsNotExist(err) {
 		d.logf(ERROR, "DISKQUEUE(%s) failed to retrieveMetaData - %s", d.name, err)
 	}
+
+	fileNameRegexp, _ = regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat$`)
+	badFileNameRegexp, _ = regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat.bad$`)
 
 	go d.ioLoop()
 }
@@ -422,6 +427,8 @@ func (d *diskQueue) metaDataFileSize() int64 {
 		metaDataFileSize = 64
 	}
 
+	metaDataFile.Close()
+
 	return metaDataFileSize
 }
 
@@ -518,9 +525,7 @@ func (d *diskQueue) getAllBadFileInfo() ([]fs.FileInfo, error) {
 
 	getAllBadFileInfo := func(dirEntry fs.DirEntry) error {
 		// only accept "bad" files created by this DiskQueue object
-		regExp, _ := regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat.bad$`)
-
-		if regExp.MatchString(dirEntry.Name()) {
+		if badFileNameRegexp.MatchString(dirEntry.Name()) {
 			badFileInfo, e := dirEntry.Info()
 			if e == nil && badFileInfo != nil {
 				badFileInfos = append(badFileInfos, badFileInfo)
@@ -541,8 +546,7 @@ func (d *diskQueue) updateWriteBytes() error {
 
 	updateWriteBytes := func(dirEntry fs.DirEntry) error {
 		// only accept files created by this DiskQueue object
-		regExp, _ := regexp.Compile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat$`)
-		if regExp.MatchString(dirEntry.Name()) {
+		if fileNameRegexp.MatchString(dirEntry.Name()) {
 			fileInfo, e := dirEntry.Info()
 			if e == nil && fileInfo != nil {
 				d.writeBytes += fileInfo.Size()
