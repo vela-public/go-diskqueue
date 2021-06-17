@@ -23,12 +23,13 @@ import (
 type LogLevel int
 
 const (
-	DEBUG           = LogLevel(1)
-	INFO            = LogLevel(2)
-	WARN            = LogLevel(3)
-	ERROR           = LogLevel(4)
-	FATAL           = LogLevel(5)
-	numFileMsgBytes = 8
+	DEBUG               = LogLevel(1)
+	INFO                = LogLevel(2)
+	WARN                = LogLevel(3)
+	ERROR               = LogLevel(4)
+	FATAL               = LogLevel(5)
+	numFileMsgBytes     = 8
+	maxMetaDataFileSize = 56
 )
 
 var badFileNameRegexp, fileNameRegexp *regexp.Regexp
@@ -426,7 +427,7 @@ func (d *diskQueue) metaDataFileSize() int64 {
 	}
 	if err != nil {
 		// use max file size (7 int64 fields)
-		metaDataFileSize = 56
+		metaDataFileSize = maxMetaDataFileSize
 	}
 
 	metaDataFile.Close()
@@ -585,6 +586,7 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 			} else {
 				// recaclulate total bad files disk size to get most accurate info
 				d.totalDiskSpaceUsed -= oldestBadFileInfo.Size()
+				d.logf(INFO, "DISKQUEUE(%s) removed .bad file(%s) to free up disk space", d.name, oldestBadFileInfo.Name())
 			}
 
 			badFileInfos = badFileInfos[1:]
@@ -596,6 +598,8 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 				d.handleReadError()
 				return err
 
+			} else {
+				d.logf(INFO, "DISKQUEUE(%s) removed file(%s) to free up disk space", d.name, d.fileName(d.readFileNum))
 			}
 			d.updateTotalDiskSpaceUsed()
 		}
@@ -614,6 +618,10 @@ func (d *diskQueue) checkDiskSpace(totalBytes int64, reachedFileSizeLimit bool) 
 	// If the data to be written is bigger than the disk size limit, do not write
 	if expectedBytesIncrease > d.maxBytesDiskSpace {
 		return errors.New("message size surpasses disk size limit")
+	}
+
+	if d.maxBytesDiskSpace <= maxMetaDataFileSize {
+		return errors.New("disk size limit too small: not enough space for MetaData file size")
 	}
 
 	// check if we have enough space to write this message
@@ -663,7 +671,10 @@ func (d *diskQueue) writeOne(data []byte) error {
 		}
 
 		// free disk space if needed
-		d.checkDiskSpace(totalBytes, reachedFileSizeLimit)
+		err = d.checkDiskSpace(totalBytes, reachedFileSizeLimit)
+		if err != nil {
+			return err
+		}
 	} else if d.writePos+totalBytes >= d.maxBytesPerFile {
 		reachedFileSizeLimit = true
 	}

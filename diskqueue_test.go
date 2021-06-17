@@ -395,6 +395,10 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 	msg := make([]byte, msgSize)
 	dq.Put(msg)
 
+	if dq.Depth() != 1 {
+		panic("fail")
+	}
+
 	metaDataSize := metaDataFileSize(dq.(*diskQueue).metaDataFileName())
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
@@ -416,6 +420,10 @@ func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 next:
 	dq.Put(msg)
 	<-dq.ReadChan()
+
+	if dq.Depth() != 1 {
+		panic("fail")
+	}
 
 	metaDataSize = metaDataFileSize(dq.(*diskQueue).metaDataFileName())
 	for i := 0; i < 10; i++ {
@@ -444,6 +452,10 @@ completeWriteFile:
 	dq.Put(make([]byte, bytesRemaining-4-oneByteMsgSizeIncrease))
 	dq.Put(make([]byte, 1))
 
+	if dq.Depth() != 3 {
+		panic("fail")
+	}
+
 	metaDataSize = metaDataFileSize(dq.(*diskQueue).metaDataFileName())
 	for i := 0; i < 10; i++ {
 		// test that write position and messages reset when a new file is created
@@ -471,6 +483,10 @@ completeReadFile:
 	<-dq.ReadChan()
 	<-dq.ReadChan()
 	metaDataSize = metaDataFileSize(dq.(*diskQueue).metaDataFileName())
+
+	if dq.Depth() != 1 {
+		panic("fail")
+	}
 
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
@@ -503,6 +519,10 @@ completeWriteFileAgain:
 	dq.Put(make([]byte, bytesRemaining-4-oneByteMsgSizeIncrease))
 	dq.Put(make([]byte, 1))
 
+	if dq.Depth() != 7 {
+		panic("fail")
+	}
+
 	metaDataSize = metaDataFileSize(dq.(*diskQueue).metaDataFileName())
 	for i := 0; i < 10; i++ {
 		// test that write position and messages reset when a file is completely read
@@ -532,6 +552,10 @@ completeReadFileAgain:
 	<-dq.ReadChan()
 	<-dq.ReadChan()
 	<-dq.ReadChan()
+
+	if dq.Depth() != 0 {
+		panic("fail")
+	}
 
 	metaDataSize = metaDataFileSize(dq.(*diskQueue).metaDataFileName())
 	for i := 0; i < 10; i++ {
@@ -570,6 +594,10 @@ meetDiskSizeLimit:
 	diskBytesRemaining := 6040 - metaDataFileSize(dq.(*diskQueue).metaDataFileName()) - (totalDiskBytes + 12)
 	dq.Put(make([]byte, diskBytesRemaining))
 
+	if dq.Depth() != 6 {
+		panic("fail")
+	}
+
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
 		// test the readFileNum correctly increments
@@ -591,6 +619,10 @@ meetDiskSizeLimit:
 
 surpassDiskSizeLimit:
 	dq.Put(make([]byte, 1))
+
+	if dq.Depth() != 4 {
+		panic("fail")
+	}
 
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
@@ -641,6 +673,10 @@ func TestDiskSizeImplementationMsgSizeGreaterThanFileSize(t *testing.T) {
 	// file size: 1512
 	dq.Put(make([]byte, 1500))
 
+	if dq.Depth() != 5 {
+		panic("fail")
+	}
+
 	metaDataSize := metaDataFileSize(dq.(*diskQueue).metaDataFileName())
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
@@ -662,6 +698,10 @@ func TestDiskSizeImplementationMsgSizeGreaterThanFileSize(t *testing.T) {
 writeLargeMsg:
 	// Write a large message that causes the deletion of three files
 	dq.Put(make([]byte, 3000))
+
+	if dq.Depth() != 1 {
+		panic("fail")
+	}
 
 	metaDataSize = metaDataFileSize(dq.(*diskQueue).metaDataFileName())
 	for i := 0; i < 10; i++ {
@@ -803,6 +843,10 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	// check if all the .bad files were deleted
 	badFilesCount = numberOfBadFiles(dqName, tmpDir)
 	if badFilesCount != 0 {
+		panic("fail")
+	}
+
+	if dq.Depth() != 5 {
 		panic("fail")
 	}
 
