@@ -890,7 +890,6 @@ func (d *diskQueue) moveToNextReadFile() {
 
 		if d.enableDiskLimitation {
 			d.readMessages = 0
-			// err = d.updateTotalDiskSpaceUsed()
 			if err != nil {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to update write bytes - %s", d.name, err)
 			}
@@ -943,7 +942,6 @@ func (d *diskQueue) handleReadError() {
 			d.totalDiskSpaceUsed = 0
 			d.writeMessages = 0
 		} else {
-			// err = d.updateTotalDiskSpaceUsed()
 			if err != nil {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to update write bytes - %s", d.name, err)
 			}
