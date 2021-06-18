@@ -962,6 +962,104 @@ readCorruptedFile:
 done:
 }
 
+func createMetaData(depth int64, readFileNum int64, readMessages int64,
+	readPos int64, writeFileNum int64, writeMessages int64, writePos int64,
+	dataPath string, name string) error {
+	var f *os.File
+	var err error
+
+	fileName := fmt.Sprintf(path.Join(dataPath, "%s.diskqueue.meta.dat"), name)
+
+	// write to tmp file
+	f, err = os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
+		depth,
+		readFileNum, readMessages, readPos,
+		writeFileNum, writeMessages, writePos)
+
+	if err != nil {
+		f.Close()
+		return err
+	}
+	f.Sync()
+	f.Close()
+
+	return nil
+}
+
+func TestDiskSizeImplementationAtomicData(t *testing.T) {
+	l := NewTestLogger(t)
+	dqName := "test_disk_queue_read_after_sync" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dq := NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 0, 1<<12, 2500, 50*time.Millisecond, l)
+	defer dq.Close()
+
+	msgSize := 1000
+	msg := make([]byte, msgSize)
+
+	// file 0: 2016 bytes
+	dq.Put(msg)
+	dq.Put(msg)
+
+	// file 2: 1004 bytes
+	dq.Put(msg)
+
+	metaDataSize := metaDataFileSize(dq.(*diskQueue).metaDataFileName())
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.readFileNum == 0 &&
+			d.writeFileNum == 1 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 1004 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 3020+metaDataSize {
+			// success
+			goto crashBeforePersistMetaData
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+crashBeforePersistMetaData:
+	// should cause diskQueue to move to next writeFile
+	dq.Put(msg)
+
+	// DiskQueue crashes before updating MetaData file
+
+	// recreate metaData file to before writing this message
+	createMetaData(3, 0, 0, 0, 1, 1, 1004, tmpDir, dqName)
+
+	dq = NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 0, 1<<12, 2500, 50*time.Millisecond, l)
+	dq.Put(make([]byte, 1))
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		t.Logf("%d, %d, %d, %d, %d, %d, %d, %d", d.depth, d.readFileNum, d.writeFileNum, d.readMessages, d.writeMessages, d.readPos, d.writePos, dq.(*diskQueue).totalDiskSpaceUsed)
+		if d.readFileNum == 0 &&
+			d.writeFileNum == 1 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 2 &&
+			d.readPos == 0 &&
+			d.writePos == 1009 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 4032+metaDataSize {
+			// success
+			goto done
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+done:
+}
+
 func TestDiskQueueTorture(t *testing.T) {
 	var wg sync.WaitGroup
 
