@@ -382,7 +382,7 @@ func metaDataFileSize(metaDataFileName string) int64 {
 
 func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 	l := NewTestLogger(t)
-	dqName := "test_disk_queue_read_after_sync" + strconv.Itoa(int(time.Now().Unix()))
+	dqName := "test_disk_queue_read_with_disk_size_implementation" + strconv.Itoa(int(time.Now().Unix()))
 	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
 	if err != nil {
 		panic(err)
@@ -650,7 +650,7 @@ func TestDiskSizeImplementationMsgSizeGreaterThanFileSize(t *testing.T) {
 	// write three files
 
 	l := NewTestLogger(t)
-	dqName := "test_disk_queue_read_after_sync" + strconv.Itoa(int(time.Now().Unix()))
+	dqName := "test_disk_queue_implementation_msg_size_greater_than_file_size" + strconv.Itoa(int(time.Now().Unix()))
 	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
 	if err != nil {
 		panic(err)
@@ -788,7 +788,7 @@ func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
 	// write three files
 
 	l := NewTestLogger(t)
-	dqName := "test_disk_queue_read_after_sync" + strconv.Itoa(int(time.Now().Unix()))
+	dqName := "test_disk_queue_implementation_with_bad_files" + strconv.Itoa(int(time.Now().Unix()))
 	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
 	if err != nil {
 		panic(err)
