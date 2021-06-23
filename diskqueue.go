@@ -7,13 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"math/rand"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 )
@@ -487,46 +484,27 @@ func (d *diskQueue) removeReadFile() error {
 }
 
 // walk through all of the files in the DiskQueue directory
-func (d *diskQueue) walkDiskQueueDir(fn func(fs.DirEntry) error) error {
-	// the directory containing DiskQueue files
-	var mainDir string
-	if d.dataPath == "/" {
-		mainDir = d.dataPath
-	} else {
-		pathArray := strings.Split(d.dataPath, "/")
-		mainDir = pathArray[len(pathArray)-1]
+func (d *diskQueue) walkDiskQueueDir(fn func(os.DirEntry) error) error {
+	dirEntries, err := os.ReadDir(d.dataPath)
+
+	if err != nil {
+		return err
 	}
 
-	walkDiskQueueDir := func(pathStr string, dirEntry fs.DirEntry, err error) error {
-		if dirEntry.Name() == mainDir {
-			// we want to see the contents of the directory DiskQueue writes and reads in
-			return nil
-		}
-
-		if dirEntry.IsDir() {
-			// if the entry is a directory, skip it
-			return fs.SkipDir
-		}
-
+	for _, dirEntry := range dirEntries {
+		err = fn(dirEntry)
 		if err != nil {
 			return err
 		}
-
-		return fn(dirEntry)
-	}
-
-	err := filepath.WalkDir(d.dataPath, walkDiskQueueDir)
-	if err != nil {
-		return err
 	}
 
 	return nil
 }
 
-func (d *diskQueue) getAllBadFileInfo() ([]fs.FileInfo, error) {
-	var badFileInfos []fs.FileInfo
+func (d *diskQueue) getAllBadFileInfo() ([]os.FileInfo, error) {
+	var badFileInfos []os.FileInfo
 
-	getAllBadFileInfo := func(dirEntry fs.DirEntry) error {
+	getAllBadFileInfo := func(dirEntry os.DirEntry) error {
 		// only accept "bad" files created by this DiskQueue object
 		if badFileNameRegexp.MatchString(dirEntry.Name()) {
 			badFileInfo, e := dirEntry.Info()
@@ -547,7 +525,7 @@ func (d *diskQueue) getAllBadFileInfo() ([]fs.FileInfo, error) {
 func (d *diskQueue) updateTotalDiskSpaceUsed() error {
 	d.totalDiskSpaceUsed = d.metaDataFileSize()
 
-	updateTotalDiskSpaceUsed := func(dirEntry fs.DirEntry) error {
+	updateTotalDiskSpaceUsed := func(dirEntry os.DirEntry) error {
 		// only accept files created by this DiskQueue object
 		if fileNameRegexp.MatchString(dirEntry.Name()) || badFileNameRegexp.MatchString(dirEntry.Name()) {
 			fileInfo, e := dirEntry.Info()
@@ -564,7 +542,7 @@ func (d *diskQueue) updateTotalDiskSpaceUsed() error {
 
 func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 	var err error
-	var badFileInfos []fs.FileInfo
+	var badFileInfos []os.FileInfo
 
 	badFileInfos, err = d.getAllBadFileInfo()
 	if err != nil {
