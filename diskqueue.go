@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math/rand"
 	"os"
 	"path"
@@ -484,15 +485,15 @@ func (d *diskQueue) removeReadFile() error {
 }
 
 // walk through all of the files in the DiskQueue directory
-func (d *diskQueue) walkDiskQueueDir(fn func(os.DirEntry) error) error {
-	dirEntries, err := os.ReadDir(d.dataPath)
+func (d *diskQueue) walkDiskQueueDir(fn func(os.FileInfo) error) error {
+	fileInfos, err := ioutil.ReadDir(d.dataPath)
 
 	if err != nil {
 		return err
 	}
 
-	for _, dirEntry := range dirEntries {
-		err = fn(dirEntry)
+	for _, fileInfo := range fileInfos {
+		err = fn(fileInfo)
 		if err != nil {
 			return err
 		}
@@ -504,13 +505,10 @@ func (d *diskQueue) walkDiskQueueDir(fn func(os.DirEntry) error) error {
 func (d *diskQueue) getAllBadFileInfo() ([]os.FileInfo, error) {
 	var badFileInfos []os.FileInfo
 
-	getAllBadFileInfo := func(dirEntry os.DirEntry) error {
+	getAllBadFileInfo := func(fileInfo os.FileInfo) error {
 		// only accept "bad" files created by this DiskQueue object
-		if badFileNameRegexp.MatchString(dirEntry.Name()) {
-			badFileInfo, e := dirEntry.Info()
-			if e == nil && badFileInfo != nil {
-				badFileInfos = append(badFileInfos, badFileInfo)
-			}
+		if badFileNameRegexp.MatchString(fileInfo.Name()) {
+			badFileInfos = append(badFileInfos, fileInfo)
 		}
 
 		return nil
@@ -525,13 +523,10 @@ func (d *diskQueue) getAllBadFileInfo() ([]os.FileInfo, error) {
 func (d *diskQueue) updateTotalDiskSpaceUsed() error {
 	d.totalDiskSpaceUsed = d.metaDataFileSize()
 
-	updateTotalDiskSpaceUsed := func(dirEntry os.DirEntry) error {
+	updateTotalDiskSpaceUsed := func(fileInfo os.FileInfo) error {
 		// only accept files created by this DiskQueue object
-		if fileNameRegexp.MatchString(dirEntry.Name()) || badFileNameRegexp.MatchString(dirEntry.Name()) {
-			fileInfo, e := dirEntry.Info()
-			if e == nil && fileInfo != nil {
-				d.totalDiskSpaceUsed += fileInfo.Size()
-			}
+		if fileNameRegexp.MatchString(fileInfo.Name()) || badFileNameRegexp.MatchString(fileInfo.Name()) {
+			d.totalDiskSpaceUsed += fileInfo.Size()
 		}
 
 		return nil
