@@ -407,32 +407,6 @@ func (d *diskQueue) readOne() ([]byte, error) {
 	return readBuf, nil
 }
 
-// get the size of the metaData file or its max possible size
-func (d *diskQueue) metaDataFileSize() int64 {
-	var err error
-	var metaDataFile *os.File
-
-	metaDataFile, err = os.OpenFile(d.metaDataFileName(), os.O_RDONLY, 0600)
-
-	var metaDataFileSize int64
-	if err == nil {
-		var stat os.FileInfo
-
-		stat, err = metaDataFile.Stat()
-		if err == nil {
-			metaDataFileSize = stat.Size()
-		}
-	}
-	if err != nil {
-		// use max file size (7 int64 fields)
-		metaDataFileSize = maxMetaDataFileSize
-	}
-
-	metaDataFile.Close()
-
-	return metaDataFileSize
-}
-
 func (d *diskQueue) removeReadFile() error {
 	var err error
 
@@ -521,7 +495,7 @@ func (d *diskQueue) getAllBadFileInfo() ([]os.FileInfo, error) {
 
 // get the accurate total non-"bad" file size
 func (d *diskQueue) updateTotalDiskSpaceUsed() error {
-	d.totalDiskSpaceUsed = d.metaDataFileSize()
+	d.totalDiskSpaceUsed = maxMetaDataFileSize
 
 	updateTotalDiskSpaceUsed := func(fileInfo os.FileInfo) error {
 		// only accept files created by this DiskQueue object
@@ -546,7 +520,7 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 
 	// keep freeing up disk space until we have enough space to write this message
 	for d.totalDiskSpaceUsed+expectedBytesIncrease > d.maxBytesDiskSpace {
-		if badFileInfos != nil {
+		if len(badFileInfos) > 0 {
 			// check if a .bad file exists. If it does, delete that first
 			oldestBadFileInfo := badFileInfos[0]
 			badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
@@ -590,11 +564,19 @@ func (d *diskQueue) checkDiskSpace(totalBytes int64, reachedFileSizeLimit bool) 
 
 	// If the data to be written is bigger than the disk size limit, do not write
 	if expectedBytesIncrease > d.maxBytesDiskSpace {
-		return errors.New("message size surpasses disk size limit")
+		errorMsg := fmt.Sprintf(
+			"message size(%d) surpasses disk size limit(%d)",
+			expectedBytesIncrease, d.maxBytesDiskSpace)
+		d.logf(ERROR, "DISKQUEUE(%s) - %s", d.name, errorMsg)
+		return errors.New(errorMsg)
 	}
 
 	if d.maxBytesDiskSpace <= maxMetaDataFileSize {
-		return errors.New("disk size limit too small: not enough space for MetaData file size")
+		errorMsg := fmt.Sprintf(
+			"disk size limit too small(%d): not enough space for MetaData file size(%d)",
+			d.maxBytesDiskSpace, maxMetaDataFileSize)
+		d.logf(ERROR, "DISKQUEUE(%s) - %s", errorMsg)
+		return errors.New(errorMsg)
 	}
 
 	// check if we have enough space to write this message
