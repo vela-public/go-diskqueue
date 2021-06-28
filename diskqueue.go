@@ -533,7 +533,7 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 			} else {
 				// recaclulate total bad files disk size to get most accurate info
 				d.totalDiskSpaceUsed -= oldestBadFileInfo.Size()
-				d.logf(INFO, "DISKQUEUE(%s) removed .bad file(%s) to free up disk space", d.name, oldestBadFileInfo.Name())
+				d.logf(INFO, "DISKQUEUE(%s) removed .bad file(%s) of size(%d bytes) to free up disk space", d.name, oldestBadFileInfo.Name(), oldestBadFileInfo.Size())
 			}
 
 			badFileInfos = badFileInfos[1:]
@@ -544,7 +544,6 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(d.readFileNum), err)
 				d.handleReadError()
 				return err
-
 			} else {
 				d.logf(INFO, "DISKQUEUE(%s) removed file(%s) to free up disk space", d.name, d.fileName(d.readFileNum))
 			}
@@ -855,9 +854,14 @@ func (d *diskQueue) moveToNextReadFile() {
 		d.needSync = true
 
 		fn := d.fileName(oldReadFileNum)
+		oldFileInfo, _ := os.Stat(fn)
+		oldFileSize := oldFileInfo.Size()
+
 		err := os.Remove(fn)
 		if err != nil {
 			d.logf(ERROR, "DISKQUEUE(%s) failed to Remove(%s) - %s", d.name, fn, err)
+		} else {
+			d.logf(INFO, "DISKQUEUE(%s) removed(%s) of size(%d bytes)", d.name, fn, oldFileSize)
 		}
 
 		if d.enableDiskLimitation {
