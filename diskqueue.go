@@ -855,13 +855,12 @@ func (d *diskQueue) moveToNextReadFile() {
 
 		fn := d.fileName(oldReadFileNum)
 		oldFileInfo, _ := os.Stat(fn)
-		oldFileSize := oldFileInfo.Size()
 
 		err := os.Remove(fn)
 		if err != nil {
 			d.logf(ERROR, "DISKQUEUE(%s) failed to Remove(%s) - %s", d.name, fn, err)
 		} else {
-			d.logf(INFO, "DISKQUEUE(%s) removed(%s) of size(%d bytes)", d.name, fn, oldFileSize)
+			d.logf(INFO, "DISKQUEUE(%s) removed(%s) of size(%d bytes)", d.name, fn, oldFileInfo.Size())
 		}
 
 		if d.enableDiskLimitation {
