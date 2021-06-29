@@ -57,6 +57,7 @@ type Interface interface {
 	Delete() error
 	Depth() int64
 	Empty() error
+	TotalBytesFolderSize() int64
 }
 
 // diskQueue implements a filesystem backed FIFO queue
@@ -189,6 +190,20 @@ func (d *diskQueue) Depth() int64 {
 		depth = d.depth
 	}
 	return depth
+}
+
+// Returns to total size of the contents (files) in the directory located in the dataPath
+func (d *diskQueue) TotalBytesFolderSize() int64 {
+	var totalFolderSizeBytes int64
+
+	getTotalFolderSizeBytes := func(fileInfo os.FileInfo) error {
+		totalFolderSizeBytes += fileInfo.Size()
+		return nil
+	}
+
+	d.walkDiskQueueDir(getTotalFolderSizeBytes)
+
+	return totalFolderSizeBytes
 }
 
 // ReadChan returns the receive-only []byte channel for reading data
@@ -467,9 +482,12 @@ func (d *diskQueue) walkDiskQueueDir(fn func(os.FileInfo) error) error {
 	}
 
 	for _, fileInfo := range fileInfos {
-		err = fn(fileInfo)
-		if err != nil {
-			return err
+		// only go through files and skip directories
+		if !fileInfo.IsDir() {
+			err = fn(fileInfo)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -539,13 +557,14 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 			badFileInfos = badFileInfos[1:]
 		} else {
 			// delete the read file (make space)
+			readFileToDeleteNum := d.readFileNum
 			err = d.removeReadFile()
 			if err != nil {
-				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(d.readFileNum), err)
+				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(readFileToDeleteNum), err)
 				d.handleReadError()
 				return err
 			} else {
-				d.logf(INFO, "DISKQUEUE(%s) removed file(%s) to free up disk space", d.name, d.fileName(d.readFileNum))
+				d.logf(INFO, "DISKQUEUE(%s) removed file(%s) to free up disk space", d.name, d.fileName(readFileToDeleteNum))
 			}
 			d.updateTotalDiskSpaceUsed()
 		}
