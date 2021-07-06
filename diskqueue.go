@@ -512,7 +512,7 @@ func (d *diskQueue) getAllBadFileInfo() ([]os.FileInfo, error) {
 }
 
 // get the accurate total non-"bad" file size
-func (d *diskQueue) updateTotalDiskSpaceUsed() error {
+func (d *diskQueue) updateTotalDiskSpaceUsed() {
 	d.totalDiskSpaceUsed = maxMetaDataFileSize
 
 	updateTotalDiskSpaceUsed := func(fileInfo os.FileInfo) error {
@@ -524,7 +524,10 @@ func (d *diskQueue) updateTotalDiskSpaceUsed() error {
 		return nil
 	}
 
-	return d.walkDiskQueueDir(updateTotalDiskSpaceUsed)
+	err := d.walkDiskQueueDir(updateTotalDiskSpaceUsed)
+	if err != nil {
+		d.logf(ERROR, "DISKQUEUE(%s) failed to update write bytes - %s", d.name, err)
+	}
 }
 
 func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
@@ -682,6 +685,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 		return err
 	}
 
+	d.logf(DEBUG, "INCREASING writePos by %d", d.TotalBytesFolderSize())
 	d.writePos += totalBytes
 	d.depth += 1
 
@@ -823,6 +827,8 @@ func (d *diskQueue) fileName(fileNum int64) string {
 
 func (d *diskQueue) checkTailCorruption(depth int64) {
 	if d.readFileNum < d.writeFileNum || d.readPos < d.writePos {
+		d.logf(DEBUG, "READ file num: %d, WRITE file num: %d, READ pos: %d,, WRITE pos: %d",
+			d.readFileNum, d.writeFileNum, d.readPos, d.writePos)
 		return
 	}
 
@@ -900,6 +906,7 @@ func (d *diskQueue) moveForward() {
 
 	d.moveToNextReadFile()
 
+	d.logf(DEBUG, "CHECK TAIL CORRUPTION")
 	d.checkTailCorruption(d.depth)
 }
 
@@ -914,6 +921,11 @@ func (d *diskQueue) handleReadError() {
 		}
 		d.writeFileNum++
 		d.writePos = 0
+
+		if d.enableDiskLimitation {
+			d.totalDiskSpaceUsed = 0
+			d.writeMessages = 0
+		}
 	}
 
 	badFn := d.fileName(d.readFileNum)
@@ -930,27 +942,18 @@ func (d *diskQueue) handleReadError() {
 			d.name, badFn, badRenameFn)
 	}
 
-	if d.enableDiskLimitation {
-		if d.readFileNum == d.writeFileNum {
-			// we moved on to the next writeFile
-			d.totalDiskSpaceUsed = 0
-			d.writeMessages = 0
-		} else {
-			if err != nil {
-				d.logf(ERROR, "DISKQUEUE(%s) failed to update write bytes - %s", d.name, err)
-			}
-		}
-
-		d.readMessages = 0
-	}
-
 	d.readFileNum++
 	d.readPos = 0
 	d.nextReadFileNum = d.readFileNum
 	d.nextReadPos = 0
+	if d.enableDiskLimitation {
+		d.readMessages = 0
+	}
 
 	// significant state change, schedule a sync on the next iteration
 	d.needSync = true
+
+	d.checkTailCorruption(d.depth)
 }
 
 // ioLoop provides the backend for exposing a go channel (via ReadChan())
@@ -983,6 +986,7 @@ func (d *diskQueue) ioLoop() {
 			count = 0
 		}
 
+		// d.logf(DEBUG, "check if need to readOne")
 		if (d.readFileNum < d.writeFileNum) || (d.readPos < d.writePos) {
 			if d.nextReadPos == d.readPos {
 				dataRead, err = d.readOne()
@@ -990,6 +994,8 @@ func (d *diskQueue) ioLoop() {
 					d.logf(ERROR, "DISKQUEUE(%s) reading at %d of %s - %s",
 						d.name, d.readPos, d.fileName(d.readFileNum), err)
 					d.handleReadError()
+					d.logf(DEBUG, "HANDLED read error. READ file num: %d, WRITE file num: %d, READ pos: %d,, WRITE pos: %d",
+						d.readFileNum, d.writeFileNum, d.readPos, d.writePos)
 					continue
 				}
 			}
