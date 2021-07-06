@@ -355,6 +355,125 @@ next:
 done:
 }
 
+func TestDepthAfterReadError(t *testing.T) {
+	l := NewTestLogger(t)
+	dqName := "test_dq_depth_after_read_error"
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	// dq := NewWithDiskSpace(dqName, tmpDir, 6040, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	dq := NewWithDiskSpace(
+		dqName,
+		tmpDir,
+		2097152,
+		800000,
+		1,
+		200000,
+		1,
+		2*time.Second,
+		l,
+	)
+	defer dq.Close()
+
+	msgSize := 36000
+	msg := make([]byte, msgSize)
+
+	for i := 0; i < 23*2; i++ {
+		err := dq.Put(msg)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+
+	for i := 0; i < 9; i++ {
+		err := dq.Put(msg)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+
+	err = dq.Put(msg)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	err = dq.Put(msg)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	err = dq.Put(msg)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	err = dq.Put(make([]byte, 8880))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+	statStr := fmt.Sprintf(
+		"Depth: %d,\n readFileNum: %d, readMessages: %d, readPos: %d,\n writeFileNum: %d, writeMessages: %d, writePos: %d",
+		d.depth, d.readFileNum, d.readMessages, d.readPos, d.writeFileNum, d.writeMessages, d.writePos)
+	fmt.Println(statStr)
+
+	// truncate
+	fmt.Println("TRUNCATE")
+	dqFn := dq.(*diskQueue).fileName(2)
+	os.Truncate(dqFn, 1017)
+
+	d = readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+	statStr = fmt.Sprintf(
+		"Depth: %d,\n readFileNum: %d, readMessages: %d, readPos: %d,\n writeFileNum: %d, writeMessages: %d, writePos: %d",
+		d.depth, d.readFileNum, d.readMessages, d.readPos, d.writeFileNum, d.writeMessages, d.writePos)
+	fmt.Println(statStr)
+	fmt.Println("START")
+	time.Sleep(time.Second)
+	// fmt.Println("WE GOT SOMETHING", <-diskQueue.ReadChan())
+	// printStats(diskQueue)
+	var numMessages int
+	// limit := 3000
+	for dq.Depth() != 0 {
+		// wait a little bit for DiskQueue to read in the
+		// select {
+		// case <-dq.ReadChan():
+		<-dq.ReadChan()
+		// fmt.Println("WE GOT SOMETHING")
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		statStr := fmt.Sprintf(
+			"Depth: %d,\n readFileNum: %d, readMessages: %d, readPos: %d,\n writeFileNum: %d, writeMessages: %d, writePos: %d",
+			d.depth, d.readFileNum, d.readMessages, d.readPos, d.writeFileNum, d.writeMessages, d.writePos)
+		fmt.Println(statStr)
+		numMessages++
+		// bool_esc = 0
+		// default:
+		// 	//fmt.Println("WE DO NOT GOT SOMETHING", bool_esc, "Depth:", dq.Depth())
+		// 	// bool_esc++
+		// 	if bool_esc == limit {
+		// 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		// 		statStr := fmt.Sprintf(
+		// 			"Depth: %d,\n readFileNum: %d, readMessages: %d, readPos: %d,\n writeFileNum: %d, writeMessages: %d, writePos: %d",
+		// 			d.depth, d.readFileNum, d.readMessages, d.readPos, d.writeFileNum, d.writeMessages, d.writePos)
+		// 		fmt.Println(statStr)
+		// 		fmt.Println("NUMBER OF MESSAGES:", numMessages, "ATTEMPTS:", bool_esc)
+		// 		panic("REACHED LIMIT")
+		// 	}
+		// 	continue
+		// }
+	}
+
+	fmt.Println("NUMBER OF MESSAGES:", numMessages)
+}
+
 func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 	l := NewTestLogger(t)
 	dqName := "test_disk_queue_read_with_disk_size_implementation" + strconv.Itoa(int(time.Now().Unix()))
@@ -874,15 +993,6 @@ readCorruptedFile:
 	// read file 1
 	<-dq.ReadChan()
 	<-dq.ReadChan()
-
-	// wait for DiskQueue to notice that file 2 is corrupted
-	time.Sleep(20 * time.Millisecond)
-
-	// check if the file was converted into a .bad file
-	badFilesCount = numberOfBadFiles(dqName, tmpDir)
-	if badFilesCount != 1 {
-		panic("fail")
-	}
 
 	// go over the disk limit
 	dq.Put(msg)
