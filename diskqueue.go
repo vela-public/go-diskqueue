@@ -580,28 +580,36 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 		d.logf(ERROR, "DISKQUEUE(%s) failed to retrieve all .bad file info - %s", d.name, err)
 	}
 
+	if expectedBytesIncrease > d.maxBytesDiskSpace {
+		return fmt.Errorf("could not make space for expectedBytesIncrease = %d, with maxBytesDiskSpace = %d ", expectedBytesIncrease, d.maxBytesDiskSpace)
+	}
+
 	// keep freeing up disk space until we have enough space to write this message
-	for d.totalDiskSpaceUsed+expectedBytesIncrease > d.maxBytesDiskSpace {
-		if len(badFileInfos) > 0 {
-			// check if a .bad file exists. If it does, delete that first
-			err = d.removeBadFile(badFileInfos[0])
-			if err != nil {
-				return err
-			}
-			badFileInfos = badFileInfos[1:]
-		} else {
-			// delete the read file (make space)
-			readFileToDeleteNum := d.readFileNum
-			err = d.removeReadFile()
-			if err != nil {
-				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(readFileToDeleteNum), err)
-				d.handleReadError()
-				return err
-			} else {
-				d.logf(INFO, "DISKQUEUE(%s) removed file(%s) to free up disk space", d.name, d.fileName(readFileToDeleteNum))
-			}
-			d.updateTotalDiskSpaceUsed()
+	for _, badFileInfo := range badFileInfos {
+		if d.totalDiskSpaceUsed+expectedBytesIncrease <= d.maxBytesDiskSpace {
+			return nil
 		}
+		d.removeBadFile(badFileInfo)
+	}
+	for d.readFileNum <= d.writeFileNum {
+		if d.totalDiskSpaceUsed+expectedBytesIncrease <= d.maxBytesDiskSpace {
+			return nil
+		}
+		// delete the read file (make space)
+		readFileToDeleteNum := d.readFileNum
+		err = d.removeReadFile()
+		if err != nil {
+			d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(readFileToDeleteNum), err)
+			d.handleReadError()
+			return err
+		} else {
+			d.logf(INFO, "DISKQUEUE(%s) removed file(%s) to free up disk space", d.name, d.fileName(readFileToDeleteNum))
+		}
+		d.updateTotalDiskSpaceUsed()
+	}
+
+	if d.totalDiskSpaceUsed+expectedBytesIncrease > d.maxBytesDiskSpace {
+		return fmt.Errorf("could not make space for totalDiskSpaceUsed = %d, expectedBytesIncrease = %d, with maxBytesDiskSpace = %d ", d.totalDiskSpaceUsed, expectedBytesIncrease, d.maxBytesDiskSpace)
 	}
 
 	return nil
