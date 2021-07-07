@@ -941,7 +941,6 @@ func (d *diskQueue) handleReadError() {
 		d.writePos = 0
 
 		if d.enableDiskLimitation {
-			d.totalDiskSpaceUsed = 0
 			d.writeMessages = 0
 		}
 	}
