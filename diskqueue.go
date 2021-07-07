@@ -455,20 +455,13 @@ func (d *diskQueue) removeBadFile(oldestBadFileInfo os.FileInfo) error {
 	return nil
 }
 
-func (d *diskQueue) removeReadFile() error {
+func (d *diskQueue) readNumOfMessages(fileName string) (int64, error) {
 	var err error
 
-	if d.readFileNum == d.writeFileNum {
-		d.skipToNextRWFile()
-		return nil
-	}
-
 	if d.readFile == nil {
-		curFileName := d.fileName(d.readFileNum)
-
-		d.readFile, err = os.OpenFile(curFileName, os.O_RDONLY, 0600)
+		d.readFile, err = os.OpenFile(fileName, os.O_RDONLY, 0600)
 		if err != nil {
-			return err
+			return 0, err
 		}
 
 		d.reader = bufio.NewReader(d.readFile)
@@ -483,11 +476,26 @@ func (d *diskQueue) removeReadFile() error {
 	// read total messages number at the end of the file
 	_, err = d.readFile.Seek(-numFileMsgBytes, 2)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var totalMessages int64
 	err = binary.Read(d.reader, binary.BigEndian, &totalMessages)
+	if err != nil {
+		return 0, err
+	}
+
+	return totalMessages, nil
+}
+
+func (d *diskQueue) removeReadFile() error {
+	if d.readFileNum == d.writeFileNum {
+		d.skipToNextRWFile()
+		return nil
+	}
+
+	curFileName := d.fileName(d.readFileNum)
+	totalMessages, err := d.readNumOfMessages(curFileName)
 	if err != nil {
 		return err
 	}
