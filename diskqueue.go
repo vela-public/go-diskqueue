@@ -69,8 +69,8 @@ type diskQueue struct {
 	writePos           int64
 	readFileNum        int64
 	writeFileNum       int64
-	readMessages       int64
-	writeMessages      int64
+	readMessages       int64 // Number of read messages. It's used to update depth.
+	writeMessages      int64 // Number of write messages. It's used to update depth.
 	totalDiskSpaceUsed int64
 	depth              int64
 
@@ -138,7 +138,6 @@ func NewWithDiskSpace(name string, dataPath string,
 	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
 	enableDiskLimitation := true
 	if maxBytesDiskSpace <= 0 {
-		maxBytesDiskSpace = 0
 		enableDiskLimitation = false
 	}
 	d := diskQueue{
@@ -162,12 +161,25 @@ func NewWithDiskSpace(name string, dataPath string,
 		enableDiskLimitation: enableDiskLimitation,
 	}
 
-	d.start()
+	err := d.start()
+	if err != nil {
+		return nil
+	}
+
 	return &d
 }
 
 // Get the last known state of DiskQueue from metadata and start ioLoop
-func (d *diskQueue) start() {
+func (d *diskQueue) start() error {
+	// ensure that DiskQueue has enough space to write the metadata file
+	if d.enableDiskLimitation && d.maxBytesDiskSpace <= maxMetaDataFileSize {
+		errorMsg := fmt.Sprintf(
+			"disk size limit too small(%d): not enough space for MetaData file size(%d)",
+			d.maxBytesDiskSpace, maxMetaDataFileSize)
+		d.logf(ERROR, "DISKQUEUE(%s) - %s", errorMsg)
+		return errors.New(errorMsg)
+	}
+
 	// no need to lock here, nothing else could possibly be touching this instance
 	err := d.retrieveMetaData()
 	if err != nil && !os.IsNotExist(err) {
@@ -180,6 +192,8 @@ func (d *diskQueue) start() {
 	d.updateTotalDiskSpaceUsed()
 
 	go d.ioLoop()
+
+	return nil
 }
 
 // Depth returns the depth of the queue
@@ -422,6 +436,25 @@ func (d *diskQueue) readOne() ([]byte, error) {
 	return readBuf, nil
 }
 
+func (d *diskQueue) removeBadFile(oldestBadFileInfo os.FileInfo) error {
+	var err error
+	badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
+
+	// remove file if it exists
+	err = os.Remove(badFileFilePath)
+	if err != nil {
+		d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
+		d.updateTotalDiskSpaceUsed()
+		return err
+	} else {
+		// recaclulate total bad files disk size to get most accurate info
+		d.totalDiskSpaceUsed -= oldestBadFileInfo.Size()
+		d.logf(INFO, "DISKQUEUE(%s) removed .bad file(%s) of size(%d bytes) to free up disk space", d.name, oldestBadFileInfo.Name(), oldestBadFileInfo.Size())
+	}
+
+	return nil
+}
+
 func (d *diskQueue) removeReadFile() error {
 	var err error
 
@@ -540,20 +573,10 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 	for d.totalDiskSpaceUsed+expectedBytesIncrease > d.maxBytesDiskSpace {
 		if len(badFileInfos) > 0 {
 			// check if a .bad file exists. If it does, delete that first
-			oldestBadFileInfo := badFileInfos[0]
-			badFileFilePath := path.Join(d.dataPath, oldestBadFileInfo.Name())
-
-			err = os.Remove(badFileFilePath)
+			err = d.removeBadFile(badFileInfos[0])
 			if err != nil {
-				d.logf(ERROR, "DISKQUEUE(%s) failed to remove .bad file(%s) - %s", d.name, oldestBadFileInfo.Name(), err)
-				d.updateTotalDiskSpaceUsed()
 				return err
-			} else {
-				// recaclulate total bad files disk size to get most accurate info
-				d.totalDiskSpaceUsed -= oldestBadFileInfo.Size()
-				d.logf(INFO, "DISKQUEUE(%s) removed .bad file(%s) of size(%d bytes) to free up disk space", d.name, oldestBadFileInfo.Name(), oldestBadFileInfo.Size())
 			}
-
 			badFileInfos = badFileInfos[1:]
 		} else {
 			// delete the read file (make space)
@@ -574,26 +597,13 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 }
 
 // check if there is enough available disk space to write new data to file
-func (d *diskQueue) checkDiskSpace(totalBytes int64, reachedFileSizeLimit bool) error {
-	expectedBytesIncrease := totalBytes
-	if reachedFileSizeLimit {
-		expectedBytesIncrease += numFileMsgBytes
-	}
-
+func (d *diskQueue) checkDiskSpace(expectedBytesIncrease int64) error {
 	// If the data to be written is bigger than the disk size limit, do not write
 	if expectedBytesIncrease > d.maxBytesDiskSpace {
 		errorMsg := fmt.Sprintf(
 			"message size(%d) surpasses disk size limit(%d)",
 			expectedBytesIncrease, d.maxBytesDiskSpace)
 		d.logf(ERROR, "DISKQUEUE(%s) - %s", d.name, errorMsg)
-		return errors.New(errorMsg)
-	}
-
-	if d.maxBytesDiskSpace <= maxMetaDataFileSize {
-		errorMsg := fmt.Sprintf(
-			"disk size limit too small(%d): not enough space for MetaData file size(%d)",
-			d.maxBytesDiskSpace, maxMetaDataFileSize)
-		d.logf(ERROR, "DISKQUEUE(%s) - %s", errorMsg)
 		return errors.New(errorMsg)
 	}
 
@@ -638,13 +648,15 @@ func (d *diskQueue) writeOne(data []byte) error {
 	reachedFileSizeLimit := false
 
 	if d.enableDiskLimitation {
+		expectedBytesIncrease := totalBytes
 		// check if we will reach or surpass file size limit
 		if d.writePos+totalBytes+numFileMsgBytes >= d.maxBytesPerFile {
 			reachedFileSizeLimit = true
+			expectedBytesIncrease += numFileMsgBytes
 		}
 
 		// free disk space if needed
-		err = d.checkDiskSpace(totalBytes, reachedFileSizeLimit)
+		err = d.checkDiskSpace(expectedBytesIncrease)
 		if err != nil {
 			return err
 		}
@@ -753,15 +765,16 @@ func (d *diskQueue) retrieveMetaData() error {
 	}
 	defer f.Close()
 
+	var depth int64
 	// if user is using disk space limit feature
 	if d.enableDiskLimitation {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
-			&d.depth,
+			&depth,
 			&d.readFileNum, &d.readMessages, &d.readPos,
 			&d.writeFileNum, &d.writeMessages, &d.writePos)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
-			&d.depth,
+			&depth,
 			&d.readFileNum, &d.readPos,
 			&d.writeFileNum, &d.writePos)
 	}
@@ -770,6 +783,7 @@ func (d *diskQueue) retrieveMetaData() error {
 		return err
 	}
 
+	d.depth = depth
 	d.nextReadFileNum = d.readFileNum
 	d.nextReadPos = d.readPos
 
