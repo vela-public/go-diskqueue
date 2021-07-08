@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"sync"
@@ -231,6 +232,11 @@ func TestDiskQueueCorruption(t *testing.T) {
 		Equal(t, msg, <-dq.ReadChan())
 	}
 
+	badFilesCount := numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 1 {
+		panic("fail")
+	}
+
 	// corrupt the 4th (current) file
 	dqFn = dq.(*diskQueue).fileName(3)
 	os.Truncate(dqFn, 100)
@@ -238,6 +244,10 @@ func TestDiskQueueCorruption(t *testing.T) {
 	dq.Put(msg) // in 5th file
 
 	Equal(t, msg, <-dq.ReadChan())
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 2 {
+		panic("fail")
+	}
 
 	// write a corrupt (len 0) message at the 5th (current) file
 	dq.(*diskQueue).writeFile.Write([]byte{0, 0, 0, 0})
@@ -247,11 +257,14 @@ func TestDiskQueueCorruption(t *testing.T) {
 	dq.Put(msg)
 
 	Equal(t, msg, <-dq.ReadChan())
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 3 {
+		panic("fail")
+	}
 }
 
 type md struct {
 	depth         int64
-	writeBytes    int64
 	readFileNum   int64
 	writeFileNum  int64
 	readMessages  int64
@@ -275,11 +288,12 @@ func readMetaDataFile(fileName string, retried int, enableDiskLimitation bool) m
 	defer f.Close()
 
 	var ret md
+
 	if enableDiskLimitation {
-		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d,%d\n",
+		_, err = fmt.Fscanf(f, "%d\n%d,%d,%d\n%d,%d,%d\n",
 			&ret.depth,
 			&ret.readFileNum, &ret.readMessages, &ret.readPos,
-			&ret.writeBytes, &ret.writeFileNum, &ret.writeMessages, &ret.writePos)
+			&ret.writeFileNum, &ret.writeMessages, &ret.writePos)
 	} else {
 		_, err = fmt.Fscanf(f, "%d\n%d,%d\n%d,%d\n",
 			&ret.depth,
@@ -343,29 +357,33 @@ done:
 
 func TestDiskQueueSyncAfterReadWithDiskSizeImplementation(t *testing.T) {
 	l := NewTestLogger(t)
-	dqName := "test_disk_queue_read_after_sync" + strconv.Itoa(int(time.Now().Unix()))
+	dqName := "test_disk_queue_read_with_disk_size_implementation" + strconv.Itoa(int(time.Now().Unix()))
 	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
 	if err != nil {
 		panic(err)
 	}
 	defer os.RemoveAll(tmpDir)
-	dq := NewWithDiskSize(dqName, tmpDir, 1<<11, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	dq := NewWithDiskSpace(dqName, tmpDir, 6040, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
 	defer dq.Close()
 
 	msgSize := 1000
 	msg := make([]byte, msgSize)
 	dq.Put(msg)
 
+	if dq.Depth() != 1 {
+		panic("fail")
+	}
+
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
-			d.writeBytes == 1004 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
 			d.readMessages == 0 &&
 			d.writeMessages == 1 &&
 			d.readPos == 0 &&
-			d.writePos == 1004 {
+			d.writePos == 1004 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 1004+maxMetaDataFileSize {
 			// success
 			goto next
 		}
@@ -377,16 +395,20 @@ next:
 	dq.Put(msg)
 	<-dq.ReadChan()
 
+	if dq.Depth() != 1 {
+		panic("fail")
+	}
+
 	for i := 0; i < 10; i++ {
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
-			d.writeBytes == 2008 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 0 &&
 			d.readMessages == 1 &&
 			d.writeMessages == 2 &&
 			d.readPos == 1004 &&
-			d.writePos == 2008 {
+			d.writePos == 2008 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 2008+maxMetaDataFileSize {
 			// success
 			goto completeWriteFile
 		}
@@ -403,18 +425,22 @@ completeWriteFile:
 	dq.Put(make([]byte, bytesRemaining-4-oneByteMsgSizeIncrease))
 	dq.Put(make([]byte, 1))
 
+	if dq.Depth() != 3 {
+		panic("fail")
+	}
+
 	for i := 0; i < 10; i++ {
 		// test that write position and messages reset when a new file is created
 		// test the writeFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 3 &&
-			d.writeBytes == 2048 &&
 			d.readFileNum == 0 &&
 			d.writeFileNum == 1 &&
 			d.readMessages == 1 &&
 			d.writeMessages == 0 &&
 			d.readPos == 1004 &&
-			d.writePos == 0 {
+			d.writePos == 0 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 2048+maxMetaDataFileSize {
 			// success
 			goto completeReadFile
 		}
@@ -429,18 +455,22 @@ completeReadFile:
 	<-dq.ReadChan()
 	<-dq.ReadChan()
 
+	if dq.Depth() != 1 {
+		panic("fail")
+	}
+
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 1 &&
-			d.writeBytes == 1004 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 1 &&
 			d.readMessages == 0 &&
 			d.writeMessages == 1 &&
 			d.readPos == 0 &&
-			d.writePos == 1004 {
+			d.writePos == 1004 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 1004+maxMetaDataFileSize {
 			// success
 			goto completeWriteFileAgain
 		}
@@ -460,18 +490,22 @@ completeWriteFileAgain:
 	dq.Put(make([]byte, bytesRemaining-4-oneByteMsgSizeIncrease))
 	dq.Put(make([]byte, 1))
 
+	if dq.Depth() != 7 {
+		panic("fail")
+	}
+
 	for i := 0; i < 10; i++ {
 		// test that write position and messages reset when a file is completely read
 		// test the writeFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 7 &&
-			d.writeBytes == 5068 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 3 &&
 			d.readMessages == 0 &&
 			d.writeMessages == 0 &&
 			d.readPos == 0 &&
-			d.writePos == 0 {
+			d.writePos == 0 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 5068+maxMetaDataFileSize {
 			// success
 			goto completeReadFileAgain
 		}
@@ -489,18 +523,389 @@ completeReadFileAgain:
 	<-dq.ReadChan()
 	<-dq.ReadChan()
 
+	if dq.Depth() != 0 {
+		panic("fail")
+	}
+
 	for i := 0; i < 10; i++ {
 		// test that read position and messages reset when a file is completely read
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 0 &&
-			d.writeBytes == 0 &&
 			d.readFileNum == 3 &&
 			d.writeFileNum == 3 &&
 			d.readMessages == 0 &&
 			d.writeMessages == 0 &&
 			d.readPos == 0 &&
-			d.writePos == 0 {
+			d.writePos == 0 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == maxMetaDataFileSize {
+			// success
+			goto done
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+done:
+}
+
+func TestDiskSizeImplementationDiskSizeLimit(t *testing.T) {
+	l := NewTestLogger(t)
+	dqName := "test_disk_queue_implementation_disk_size_limit" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dq := NewWithDiskSpace(dqName, tmpDir, 6040, 1<<11, 0, 1<<10, 2500, 50*time.Millisecond, l)
+	defer dq.Close()
+
+	msgSize := 1000
+	msg := make([]byte, msgSize)
+
+	// meet disk size limit
+	// write a complete file
+	dq.Put(msg)
+	dq.Put(msg)
+	dq.Put(msg)
+
+	// meet the disk size limit exactly (6040 bytes) when writeFileNum
+	// is ahead of readFileNum
+	dq.Put(msg)
+	dq.Put(msg)
+
+	totalDiskBytes := int64(5*(msgSize+4) + 8)
+
+	// save space for msg len and number of msgs in file
+	diskBytesRemaining := 6040 - maxMetaDataFileSize - (totalDiskBytes + 12)
+	dq.Put(make([]byte, diskBytesRemaining))
+
+	depth := dq.Depth()
+	if depth != 6 {
+		panic("fail")
+	}
+
+	for i := 0; i < 10; i++ {
+		// test that read position and messages reset when a file is completely read
+		// test the readFileNum correctly increments
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 6 &&
+			d.readFileNum == 0 &&
+			d.writeFileNum == 2 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 6040 {
+			// success
+			goto surpassDiskSizeLimit
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+surpassDiskSizeLimit:
+	dq.Put(make([]byte, 1))
+
+	if dq.Depth() != 4 {
+		panic("fail")
+	}
+
+	for i := 0; i < 10; i++ {
+		// test that read position and messages reset when a file is completely read
+		// test the readFileNum correctly increments
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 4 &&
+			d.readFileNum == 1 &&
+			d.writeFileNum == 2 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 5 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 3025 {
+			// success
+			goto done
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+done:
+}
+
+func TestDiskSizeImplementationMsgSizeGreaterThanFileSize(t *testing.T) {
+	// write three files
+
+	l := NewTestLogger(t)
+	dqName := "test_disk_queue_implementation_msg_size_greater_than_file_size" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dq := NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 0, 1<<12, 2500, 50*time.Millisecond, l)
+	defer dq.Close()
+
+	msgSize := 1000
+	msg := make([]byte, msgSize)
+
+	// file size: 1496
+	dq.Put(msg)
+	dq.Put(make([]byte, 480))
+
+	// file size: 1032
+	dq.Put(msg)
+	dq.Put(make([]byte, 16))
+
+	// file size: 1512
+	dq.Put(make([]byte, 1500))
+
+	if dq.Depth() != 5 {
+		panic("fail")
+	}
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 5 &&
+			d.readFileNum == 0 &&
+			d.writeFileNum == 3 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 4040+maxMetaDataFileSize {
+			// success
+			goto writeLargeMsg
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+writeLargeMsg:
+	// Write a large message that causes the deletion of three files
+	dq.Put(make([]byte, 3000))
+
+	if dq.Depth() != 1 {
+		panic("fail")
+	}
+
+	for i := 0; i < 10; i++ {
+		// test that read position and messages reset when a file is completely read
+		// test the readFileNum correctly increments
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 1 &&
+			d.readFileNum == 3 &&
+			d.writeFileNum == 4 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 3012+maxMetaDataFileSize {
+			// success
+			goto done
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+done:
+}
+
+func createBadFile(dqName string, filePath string, fileNum int64, numBytes int) error {
+	fn := fmt.Sprintf(path.Join(filePath, "%s.diskqueue.%06d.dat.bad"), dqName, fileNum)
+
+	badFile, err := os.OpenFile(fn, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+
+	defer badFile.Close()
+
+	_, err = badFile.Write(make([]byte, numBytes))
+
+	return err
+}
+
+func numberOfBadFiles(diskQueueName string, dataPath string) int64 {
+	var badFilesCount int64
+
+	fileInfos, _ := ioutil.ReadDir(dataPath)
+	for _, fileInfo := range fileInfos {
+		regExp, _ := regexp.Compile(`^` + diskQueueName + `.diskqueue.\d\d\d\d\d\d.dat.bad$`)
+		if regExp.MatchString(fileInfo.Name()) {
+			badFilesCount++
+		}
+	}
+
+	return badFilesCount
+}
+
+func TestDiskSizeImplementationWithBadFiles(t *testing.T) {
+	// write three files
+
+	l := NewTestLogger(t)
+	dqName := "test_disk_queue_implementation_with_bad_files" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// there should be no .bad files
+	var badFilesCount int64
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
+		panic("fail")
+	}
+
+	// make 2 bad files
+	createBadFile(dqName, tmpDir, 0, 1503)
+	createBadFile(dqName, tmpDir, 1, 1032)
+
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 2 {
+		panic("fail")
+	}
+
+	dq := NewWithDiskSpace(dqName, tmpDir, 1<<12, 1<<10, 10, 1600, 2500, 50*time.Millisecond, l)
+	defer dq.Close()
+
+	msgSize := 1000
+	msg := make([]byte, msgSize)
+
+	// file 0 size: 1497
+	dq.Put(msg)
+	dq.Put(make([]byte, 481))
+
+	// no bad files should have been deleted
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 2 {
+		panic("fail")
+	}
+
+	// file 1 size: 1032
+	dq.Put(msg)
+	dq.Put(make([]byte, 16))
+
+	// one .bad file should be deleted in order to make space
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 1 {
+		panic("fail")
+	}
+
+	// file 2 size: 1503
+	dq.Put(make([]byte, 1491))
+
+	// check if all the .bad files were deleted
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
+		panic("fail")
+	}
+
+	depth := dq.Depth()
+	if depth != 5 {
+		panic("fail")
+	}
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.depth == 5 &&
+			d.readFileNum == 0 &&
+			d.writeFileNum == 3 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 4032+maxMetaDataFileSize {
+			// success
+			goto corruptFiles
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+corruptFiles:
+	// test removeReadFile when file is corrupted
+	// create bad files see if totalDiskSpaceUsed is updated properly
+	// check that after corrupting files, we make space appropriately
+
+	// corrupt file 0
+	dqFn := dq.(*diskQueue).fileName(0)
+	os.Truncate(dqFn, 1017) // 1 valid message, 1 corrupted message
+
+	dq.Put(make([]byte, 100))
+
+	// check if the .bad files were deleted
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
+		panic("fail")
+	}
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.readFileNum == 1 &&
+			d.writeFileNum == 3 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 1 &&
+			d.readPos == 0 &&
+			d.writePos == 104 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 2639+maxMetaDataFileSize {
+			// success
+			goto readCorruptedFile
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	panic("fail")
+
+readCorruptedFile:
+	// test handleReadError
+
+	// there should be no "bad" files at this point
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
+		panic("fail")
+	}
+
+	// corrupt file 2
+	// have readOne turn it into a bad file and then try to make space
+	dqFn = dq.(*diskQueue).fileName(2)
+	os.Truncate(dqFn, 1020)
+
+	// read file 1
+	<-dq.ReadChan()
+	<-dq.ReadChan()
+
+	// wait for DiskQueue to notice that file 2 is corrupted
+	time.Sleep(20 * time.Millisecond)
+
+	// check if the file was converted into a .bad file
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 1 {
+		panic("fail")
+	}
+
+	// go over the disk limit
+	dq.Put(msg)
+
+	// write a complete file
+	dq.Put(msg)
+	dq.Put(msg)
+
+	// check if the corrupted file was deleted to make space
+	badFilesCount = numberOfBadFiles(dqName, tmpDir)
+	if badFilesCount != 0 {
+		panic("fail")
+	}
+
+	for i := 0; i < 10; i++ {
+		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
+		if d.readFileNum == 3 &&
+			d.writeFileNum == 5 &&
+			d.readMessages == 0 &&
+			d.writeMessages == 0 &&
+			d.readPos == 0 &&
+			d.writePos == 0 &&
+			dq.(*diskQueue).totalDiskSpaceUsed == 3132+maxMetaDataFileSize {
 			// success
 			goto done
 		}
