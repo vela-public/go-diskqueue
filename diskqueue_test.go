@@ -499,7 +499,6 @@ completeWriteFileAgain:
 		// test the writeFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 7 &&
-			d.writeBytes == 5068 &&
 			d.readFileNum == 1 &&
 			d.writeFileNum == 3 &&
 			d.readMessages == 0 &&
@@ -533,7 +532,6 @@ completeReadFileAgain:
 		// test the readFileNum correctly increments
 		d := readMetaDataFile(dq.(*diskQueue).metaDataFileName(), 0, true)
 		if d.depth == 0 &&
-			d.writeBytes == 0 &&
 			d.readFileNum == 3 &&
 			d.writeFileNum == 3 &&
 			d.readMessages == 0 &&
