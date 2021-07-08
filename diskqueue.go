@@ -79,7 +79,7 @@ type diskQueue struct {
 	// instantiation time metadata
 	name                string
 	dataPath            string
-	maxBytesDiskSpace   int64
+	maxBytesDiskSize    int64
 	maxBytesPerFile     int64 // cannot change once created
 	maxBytesPerFileRead int64
 	minMsgSize          int32
@@ -93,6 +93,10 @@ type diskQueue struct {
 	// (but not yet sent over readChan)
 	nextReadPos     int64
 	nextReadFileNum int64
+
+	// keep track of the msg size we have read
+	// (but not yet sent over readChan)
+	readMsgSize int32
 
 	readFile  *os.File
 	writeFile *os.File
@@ -123,17 +127,17 @@ func New(name string, dataPath string, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32,
 	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
 
-	return NewWithDiskSpace(name, dataPath,
+	return NewWithDiskSize(name, dataPath,
 		0, maxBytesPerFile,
 		minMsgSize, maxMsgSize,
 		syncEvery, syncTimeout, logf)
 }
 
-// Another constructor that allows users to use Disk Space Limit feature
-// If user is not using Disk Space Limit feature, maxBytesDiskSpace will
+// Another constructor that allows users to use Disk Size Limit feature
+// If user is not using Disk Size Limit feature, maxBytesDiskSize will
 // be 0
-func NewWithDiskSpace(name string, dataPath string,
-	maxBytesDiskSpace int64, maxBytesPerFile int64,
+func NewWithDiskSize(name string, dataPath string,
+	maxBytesDiskSize int64, maxBytesPerFile int64,
 	minMsgSize int32, maxMsgSize int32,
 	syncEvery int64, syncTimeout time.Duration, logf AppLogFunc) Interface {
 	enableDiskLimitation := true
@@ -965,6 +969,24 @@ func (d *diskQueue) handleReadError() {
 		d.logf(ERROR,
 			"DISKQUEUE(%s) failed to rename bad diskqueue file %s to %s",
 			d.name, badFn, badRenameFn)
+	}
+
+	if d.enableDiskLimitation {
+		var badFileSize int64
+		if d.readFileNum == d.writeFileNum {
+			badFileSize = d.writeBytes
+		} else {
+			var stat os.FileInfo
+			stat, err = os.Stat(badRenameFn)
+			if err == nil {
+				badFileSize = stat.Size()
+			} else {
+				// max file size
+				badFileSize = int64(d.maxMsgSize) + d.maxBytesPerFile + 4 + numFileMsgsBytes
+			}
+		}
+
+		d.writeBytes -= badFileSize
 	}
 
 	d.readFileNum++
