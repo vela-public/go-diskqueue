@@ -489,7 +489,9 @@ func (d *diskQueue) readNumOfMessages(fileName string) (int64, error) {
 }
 
 func (d *diskQueue) removeReadFile() error {
+	d.logf(DEBUG, "START REMOVE READ FILE")
 	if d.readFileNum == d.writeFileNum {
+		d.logf(DEBUG, "START SKIP TO NEXT RW FILE")
 		d.skipToNextRWFile()
 		return nil
 	}
@@ -502,6 +504,7 @@ func (d *diskQueue) removeReadFile() error {
 
 	// update depth with the remaining number of messages
 	d.depth -= totalMessages - d.readMessages
+	d.logf(DEBUG, "Updates Depth: %d, total messages: %d, read messages: %d", d.depth, totalMessages, d.readMessages)
 
 	// we have not finished reading this file
 	if d.readFileNum == d.nextReadFileNum {
@@ -757,16 +760,19 @@ func (d *diskQueue) sync() error {
 			d.writeFile = nil
 			return err
 		}
+		d.logf(DEBUG, "Sync writeFile")
 	}
 
 	if d.enableDiskLimitation {
 		d.updateTotalDiskSpaceUsed()
 	}
+	d.logf(DEBUG, "Updated total disk space used")
 
 	err := d.persistMetaData()
 	if err != nil {
 		return err
 	}
+	d.logf(DEBUG, "Persisted meta data")
 
 	d.needSync = false
 	return nil
