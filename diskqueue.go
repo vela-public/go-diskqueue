@@ -408,9 +408,11 @@ func (d *diskQueue) readOne() ([]byte, error) {
 }
 
 func (d *diskQueue) removeReadFile() error {
+	d.logf(DEBUG, "START REMOVAL OF READ FILE")
 	var err error
 
 	if d.readFileNum == d.writeFileNum {
+		d.logf(DEBUG, "SKIP to next RW FILE")
 		d.skipToNextRWFile()
 		return nil
 	}
@@ -432,6 +434,9 @@ func (d *diskQueue) removeReadFile() error {
 	}
 	defer closeReadFile()
 
+	// Reset reader
+	// d.reader = bufio.NewReader(d.readFile)
+
 	// read total messages number at the end of the file
 	_, err = d.readFile.Seek(-numFileMsgBytes, 2)
 	if err != nil {
@@ -441,11 +446,18 @@ func (d *diskQueue) removeReadFile() error {
 	var totalMessages int64
 	err = binary.Read(d.reader, binary.BigEndian, &totalMessages)
 	if err != nil {
+		d.logf(DEBUG, "ERROR: could not read binary total messages - %s", err)
 		return err
 	}
 
+	if totalMessages > 30 || totalMessages < 0 {
+		panic(fmt.Sprintf("Total Messages out of bounds: %d for file: %d. Buffer size: %d",
+			totalMessages, d.readFileNum, d.reader.Buffered()))
+	}
 	// update depth with the remaining number of messages
 	d.depth -= totalMessages - d.readMessages
+	d.logf(DEBUG, "Update depth: %d, total messages: %d, read messages: %d, for FILE NUM: %d",
+		d.depth, totalMessages, d.readMessages, d.readFileNum)
 
 	// we have not finished reading this file
 	if d.readFileNum == d.nextReadFileNum {
@@ -539,13 +551,14 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 			badFileInfos = badFileInfos[1:]
 		} else {
 			// delete the read file (make space)
+			fileNum := d.readFileNum
 			err = d.removeReadFile()
 			if err != nil {
-				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(d.readFileNum), err)
+				d.logf(ERROR, "DISKQUEUE(%s) failed to remove file(%s) - %s", d.name, d.fileName(fileNum), err)
 				d.handleReadError()
 				return err
 			} else {
-				d.logf(INFO, "DISKQUEUE(%s) removed file(%s) to free up disk space", d.name, d.fileName(d.readFileNum))
+				d.logf(INFO, "DISKQUEUE(%s) removed file(%s) to free up disk space", d.name, d.fileName(fileNum))
 			}
 			d.updateTotalDiskSpaceUsed()
 		}
@@ -649,6 +662,11 @@ func (d *diskQueue) writeOne(data []byte) error {
 	// check if we reached the file size limit with this message
 	if d.enableDiskLimitation && reachedFileSizeLimit {
 		// write number of messages in binary to file
+		d.logf(DEBUG, "WRITING TOTAL WRITE MESSAGES: %d for file num: %d",
+			d.writeMessages+1, d.writeFileNum)
+		if d.writeMessages+1 > 100 || d.writeMessages+1 < 1 {
+			d.logf(ERROR, "TOTAL WRITE MESSAGES OUT OF BOUNDS")
+		}
 		err = binary.Write(&d.writeBuf, binary.BigEndian, d.writeMessages+1)
 		if err != nil {
 			return err
@@ -707,16 +725,19 @@ func (d *diskQueue) sync() error {
 			d.writeFile = nil
 			return err
 		}
+		d.logf(DEBUG, "Synced write file")
 	}
 
 	if d.enableDiskLimitation {
 		d.updateTotalDiskSpaceUsed()
 	}
+	d.logf(DEBUG, "Updated total disk space")
 
 	err := d.persistMetaData()
 	if err != nil {
 		return err
 	}
+	d.logf(DEBUG, "Persisted meta data")
 
 	d.needSync = false
 	return nil
