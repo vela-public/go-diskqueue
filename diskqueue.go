@@ -479,6 +479,10 @@ func (d *diskQueue) readNumOfMessages(fileName string) (int64, error) {
 		return 0, err
 	}
 
+	// Reset reader
+	fmt.Println("File name", d.readFile.Name())
+	// d.reader = bufio.NewReader(d.readFile)
+
 	var totalMessages int64
 	err = binary.Read(d.reader, binary.BigEndian, &totalMessages)
 	if err != nil {
@@ -502,10 +506,14 @@ func (d *diskQueue) removeReadFile() error {
 		return err
 	}
 
+	fmt.Printf("%d for file: %d. Buffer size: %d\n",
+		totalMessages, d.readFileNum, d.reader.Buffered())
 	if totalMessages > 30 || totalMessages < 0 {
-		panic(fmt.Sprintf("Total Messages out of bounds: %d for file: %d. Buffer size: %d",
-			totalMessages, d.readFileNum, d.reader.Buffered()))
+		// panic(fmt.Sprintf("Total Messages out of bounds: %d for file: %d. Buffer size: %d",
+		// 	totalMessages, d.readFileNum, d.reader.Buffered()))
+		panic("Total Messages out of bounds")
 	}
+	panic("Success")
 
 	// update depth with the remaining number of messages
 	d.depth -= totalMessages - d.readMessages
