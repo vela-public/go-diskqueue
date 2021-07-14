@@ -1,10 +1,14 @@
 package diskqueue
 
 import (
+	"bufio"
+	"encoding/binary"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -202,11 +206,66 @@ func printAndWrite(diskQueue Interface) {
 	printStats(diskQueue)
 }
 
+// go through all of the files and check if the number of messages number is out of bounds
+func checkFiles() error {
+	fileInfos, err := ioutil.ReadDir("nsq_dq_test")
+
+	if err != nil {
+		return err
+	}
+
+	for _, fileInfo := range fileInfos {
+		getTotalNumMessages(fileInfo)
+	}
+
+	return nil
+}
+
+func getTotalNumMessages(fileInfo os.FileInfo) error {
+	curFileName := fileInfo.Name()
+	filePath := fmt.Sprintf("%s/%s", "nsq_dq_test", curFileName)
+	readFile, err := os.OpenFile(filePath, os.O_RDONLY, 0600)
+	if err != nil {
+		fmt.Println("Unable to open file:", curFileName)
+		return err
+	}
+
+	reader := bufio.NewReader(readFile)
+
+	defer readFile.Close()
+
+	// read total messages number at the end of the file
+	_, err = readFile.Seek(-numFileMsgBytes, 2)
+	if err != nil {
+		fmt.Println("Unable to seek at file:", curFileName)
+		return err
+	}
+
+	var totalMessages int64
+	err = binary.Read(reader, binary.BigEndian, &totalMessages)
+	if err != nil {
+		fmt.Println("Unable to read total messages from", curFileName)
+		return err
+	}
+
+	fmt.Println(curFileName, "has", totalMessages, "number of messages!!!!", reader.Buffered())
+
+	isMetaFile, _ := regexp.MatchString("meta", curFileName)
+	if !isMetaFile && (totalMessages > 100 || totalMessages < 0) {
+		panic("fail")
+	}
+
+	return nil
+}
+
 func TestMain(t *testing.T) {
 	// create a diskqueue
 	var err error
 	var diskQueue Interface
 
+	checkFiles()
+	readMetaData()
+	// return
 	folderPath := "nsq_dq_test"
 	setupDq(folderPath)
 	diskQueue = largeDq(folderPath)

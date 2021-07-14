@@ -502,6 +502,11 @@ func (d *diskQueue) removeReadFile() error {
 		return err
 	}
 
+	if totalMessages > 30 || totalMessages < 0 {
+		panic(fmt.Sprintf("Total Messages out of bounds: %d for file: %d. Buffer size: %d",
+			totalMessages, d.readFileNum, d.reader.Buffered()))
+	}
+
 	// update depth with the remaining number of messages
 	d.depth -= totalMessages - d.readMessages
 	d.logf(DEBUG, "Updates Depth: %d, total messages: %d, read messages: %d", d.depth, totalMessages, d.readMessages)
