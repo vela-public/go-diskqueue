@@ -171,11 +171,11 @@ func NewWithDiskSpace(name string, dataPath string,
 
 // Get the last known state of DiskQueue from metadata and start ioLoop
 func (d *diskQueue) start() error {
-	// ensure that DiskQueue has enough space to write the metadata file
-	if d.enableDiskLimitation && d.maxBytesDiskSpace <= maxMetaDataFileSize {
+	// ensure that DiskQueue has enough space to write the metadata file + at least one data file with max size + message size
+	if d.enableDiskLimitation && (d.maxBytesDiskSpace <= maxMetaDataFileSize+d.maxBytesPerFile) {
 		errorMsg := fmt.Sprintf(
-			"disk size limit too small(%d): not enough space for MetaData file size(%d)",
-			d.maxBytesDiskSpace, maxMetaDataFileSize)
+			"disk size limit too small(%d): not enough space for MetaData file (size=%d) and at least one data file with max size (maxBytesPerFile=%d).",
+			d.maxBytesDiskSpace, maxMetaDataFileSize, d.maxBytesPerFile)
 		d.logf(ERROR, "DISKQUEUE(%s) - %s", errorMsg)
 		return errors.New(errorMsg)
 	}
@@ -463,8 +463,6 @@ func (d *diskQueue) readNumOfMessages(fileName string) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-
-		d.reader = bufio.NewReader(d.readFile)
 	}
 
 	closeReadFile := func() {
@@ -480,7 +478,7 @@ func (d *diskQueue) readNumOfMessages(fileName string) (int64, error) {
 	}
 
 	var totalMessages int64
-	err = binary.Read(d.reader, binary.BigEndian, &totalMessages)
+	err = binary.Read(d.readFile, binary.BigEndian, &totalMessages)
 	if err != nil {
 		return 0, err
 	}
@@ -578,10 +576,6 @@ func (d *diskQueue) freeDiskSpace(expectedBytesIncrease int64) error {
 	badFileInfos, err = d.getAllBadFileInfo()
 	if err != nil {
 		d.logf(ERROR, "DISKQUEUE(%s) failed to retrieve all .bad file info - %s", d.name, err)
-	}
-
-	if expectedBytesIncrease > d.maxBytesDiskSpace {
-		return fmt.Errorf("could not make space for expectedBytesIncrease = %d, with maxBytesDiskSpace = %d ", expectedBytesIncrease, d.maxBytesDiskSpace)
 	}
 
 	// keep freeing up disk space until we have enough space to write this message
