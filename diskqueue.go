@@ -186,8 +186,8 @@ func (d *diskQueue) start() error {
 		d.logf(ERROR, "DISKQUEUE(%s) failed to retrieveMetaData - %s", d.name, err)
 	}
 
-	fileNameRegexp = regexp.MustCompile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat$`)
-	badFileNameRegexp = regexp.MustCompile(`^` + d.name + `.diskqueue.\d\d\d\d\d\d.dat.bad$`)
+	fileNameRegexp = regexp.MustCompile(`^` + d.name + `.diskqueue.\d+.dat$`)
+	badFileNameRegexp = regexp.MustCompile(`^` + d.name + `.diskqueue.\d+.dat.bad$`)
 
 	d.updateTotalDiskSpaceUsed()
 
