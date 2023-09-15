@@ -53,6 +53,7 @@ func (l LogLevel) String() string {
 type Interface interface {
 	Put([]byte) error
 	ReadChan() <-chan []byte // this is expected to be an *unbuffered* channel
+	PeekChan() <-chan []byte // this is expected to be an *unbuffered* channel
 	Close() error
 	Delete() error
 	Depth() int64
@@ -102,6 +103,9 @@ type diskQueue struct {
 	// exposed via ReadChan()
 	readChan chan []byte
 
+	// exposed via PeekChan()
+	peekChan chan []byte
+
 	// internal channels
 	depthChan         chan int64
 	writeChan         chan []byte
@@ -148,6 +152,7 @@ func NewWithDiskSpace(name string, dataPath string,
 		minMsgSize:           minMsgSize,
 		maxMsgSize:           maxMsgSize,
 		readChan:             make(chan []byte),
+    peekChan:             make(chan []byte),
 		depthChan:            make(chan int64),
 		writeChan:            make(chan []byte),
 		writeResponseChan:    make(chan error),
@@ -223,6 +228,10 @@ func (d *diskQueue) TotalBytesFolderSize() int64 {
 // ReadChan returns the receive-only []byte channel for reading data
 func (d *diskQueue) ReadChan() <-chan []byte {
 	return d.readChan
+}
+
+func (d *diskQueue) PeekChan() <-chan []byte {
+	return d.peekChan
 }
 
 // Put writes a []byte to the queue
@@ -632,6 +641,33 @@ func (d *diskQueue) checkDiskSpace(expectedBytesIncrease int64) error {
 func (d *diskQueue) writeOne(data []byte) error {
 	var err error
 
+	dataLen := int32(len(data))
+	totalBytes := int64(4 + dataLen)
+
+	if dataLen < d.minMsgSize || dataLen > d.maxMsgSize {
+		return fmt.Errorf("invalid message write size (%d) minMsgSize=%d maxMsgSize=%d", dataLen, d.minMsgSize, d.maxMsgSize)
+	}
+
+	// will not wrap-around if maxBytesPerFile + maxMsgSize < Int64Max
+	if d.writePos > 0 && d.writePos+totalBytes > d.maxBytesPerFile {
+		if d.readFileNum == d.writeFileNum {
+			d.maxBytesPerFileRead = d.writePos
+		}
+
+		d.writeFileNum++
+		d.writePos = 0
+
+		// sync every time we start writing to a new file
+		err = d.sync()
+		if err != nil {
+			d.logf(ERROR, "DISKQUEUE(%s) failed to sync - %s", d.name, err)
+		}
+
+		if d.writeFile != nil {
+			d.writeFile.Close()
+			d.writeFile = nil
+		}
+	}
 	if d.writeFile == nil {
 		curFileName := d.fileName(d.writeFileNum)
 		d.writeFile, err = os.OpenFile(curFileName, os.O_RDWR|os.O_CREATE, 0600)
@@ -650,7 +686,7 @@ func (d *diskQueue) writeOne(data []byte) error {
 			}
 		}
 	}
-
+  
 	dataLen := int32(len(data))
 
 	if dataLen < d.minMsgSize || dataLen > d.maxMsgSize {
@@ -799,6 +835,29 @@ func (d *diskQueue) retrieveMetaData() error {
 	d.depth = depth
 	d.nextReadFileNum = d.readFileNum
 	d.nextReadPos = d.readPos
+
+	// if the metadata was not sync'd at the last shutdown of nsqd
+	// then the actual file size might actually be larger than the writePos,
+	// in which case the safest thing to do is skip to the next file for
+	// writes, and let the reader salvage what it can from the messages in the
+	// diskqueue beyond the metadata's likely also stale readPos
+	fileName = d.fileName(d.writeFileNum)
+	fileInfo, err := os.Stat(fileName)
+	if err != nil {
+		return err
+	}
+	fileSize := fileInfo.Size()
+	if d.writePos < fileSize {
+		d.logf(WARN,
+			"DISKQUEUE(%s) %s metadata writePos %d < file size of %d, skipping to new file",
+			d.name, fileName, d.writePos, fileSize)
+		d.writeFileNum += 1
+		d.writePos = 0
+		if d.writeFile != nil {
+			d.writeFile.Close()
+			d.writeFile = nil
+		}
+	}
 
 	return nil
 }
@@ -988,6 +1047,7 @@ func (d *diskQueue) ioLoop() {
 	var err error
 	var count int64
 	var r chan []byte
+	var p chan []byte
 
 	syncTicker := time.NewTicker(d.syncTimeout)
 
@@ -1016,13 +1076,16 @@ func (d *diskQueue) ioLoop() {
 				}
 			}
 			r = d.readChan
+			p = d.peekChan
 		} else {
 			r = nil
+			p = nil
 		}
 
 		select {
 		// the Go channel spec dictates that nil channel operations (read or write)
 		// in a select are skipped, we set r to d.readChan only when there is data to read
+		case p <- dataRead:
 		case r <- dataRead:
 			count++
 			// moveForward sets needSync flag if a file is removed
