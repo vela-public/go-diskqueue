@@ -1260,3 +1260,80 @@ func benchmarkDiskQueueGet(size int64, b *testing.B) {
 		<-dq.ReadChan()
 	}
 }
+
+func TestDiskQueuePeek(t *testing.T) {
+	l := NewTestLogger(t)
+	dqName := "test_disk_queue_peek" + strconv.Itoa(int(time.Now().Unix()))
+	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("nsq-test-%d", time.Now().UnixNano()))
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	msg := bytes.Repeat([]byte{0}, 10)
+	ml := int64(len(msg))
+	dq := New(dqName, tmpDir, 10*(ml+4), int32(ml), 1<<10, 2500, 2*time.Second, l)
+	defer dq.Close()
+	NotNil(t, dq)
+	Equal(t, int64(0), dq.Depth())
+
+	t.Run("roll", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
+			err := dq.Put(msg)
+			Nil(t, err)
+			Equal(t, int64(i+1), dq.Depth())
+		}
+
+		for i := 10; i > 0; i-- {
+			Equal(t, msg, <-dq.PeekChan())
+			Equal(t, int64(i), dq.Depth())
+
+			Equal(t, msg, <-dq.ReadChan())
+			Equal(t, int64(i-1), dq.Depth())
+		}
+
+		Nil(t, dq.Empty())
+	})
+
+	t.Run("peek-read", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
+			err := dq.Put(msg)
+			Nil(t, err)
+			Equal(t, int64(i+1), dq.Depth())
+		}
+
+		for i := 10; i > 0; i-- {
+			Equal(t, msg, <-dq.PeekChan())
+			Equal(t, int64(i), dq.Depth())
+
+			Equal(t, msg, <-dq.PeekChan())
+			Equal(t, int64(i), dq.Depth())
+
+			Equal(t, msg, <-dq.ReadChan())
+			Equal(t, int64(i-1), dq.Depth())
+		}
+
+		Nil(t, dq.Empty())
+	})
+
+	t.Run("read-peek", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
+			err := dq.Put(msg)
+			Nil(t, err)
+			Equal(t, int64(i+1), dq.Depth())
+		}
+
+		for i := 10; i > 1; i-- {
+			Equal(t, msg, <-dq.PeekChan())
+			Equal(t, int64(i), dq.Depth())
+
+			Equal(t, msg, <-dq.ReadChan())
+			Equal(t, int64(i-1), dq.Depth())
+
+			Equal(t, msg, <-dq.PeekChan())
+			Equal(t, int64(i-1), dq.Depth())
+		}
+
+		Nil(t, dq.Empty())
+	})
+
+}
