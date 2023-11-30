@@ -30,8 +30,6 @@ const (
 	maxMetaDataFileSize = 56
 )
 
-var badFileNameRegexp, fileNameRegexp *regexp.Regexp
-
 type AppLogFunc func(lvl LogLevel, f string, args ...interface{})
 
 func (l LogLevel) String() string {
@@ -119,6 +117,8 @@ type diskQueue struct {
 
 	// disk limit implementation flag
 	enableDiskLimitation bool
+
+	badFileNameRegexp, fileNameRegexp *regexp.Regexp
 }
 
 // New instantiates an instance of diskQueue, retrieving metadata
@@ -191,8 +191,8 @@ func (d *diskQueue) start() error {
 		d.logf(ERROR, "DISKQUEUE(%s) failed to retrieveMetaData - %s", d.name, err)
 	}
 
-	fileNameRegexp = regexp.MustCompile(`^` + d.name + `.diskqueue.\d+.dat$`)
-	badFileNameRegexp = regexp.MustCompile(`^` + d.name + `.diskqueue.\d+.dat.bad$`)
+	d.fileNameRegexp = regexp.MustCompile(`^` + d.name + `.diskqueue.\d+.dat$`)
+	d.badFileNameRegexp = regexp.MustCompile(`^` + d.name + `.diskqueue.\d+.dat.bad$`)
 
 	d.updateTotalDiskSpaceUsed()
 
@@ -547,7 +547,7 @@ func (d *diskQueue) getAllBadFileInfo() ([]os.FileInfo, error) {
 
 	getAllBadFileInfo := func(fileInfo os.FileInfo) error {
 		// only accept "bad" files created by this DiskQueue object
-		if badFileNameRegexp.MatchString(fileInfo.Name()) {
+		if d.badFileNameRegexp.MatchString(fileInfo.Name()) {
 			badFileInfos = append(badFileInfos, fileInfo)
 		}
 
@@ -565,7 +565,7 @@ func (d *diskQueue) updateTotalDiskSpaceUsed() {
 
 	updateTotalDiskSpaceUsed := func(fileInfo os.FileInfo) error {
 		// only accept files created by this DiskQueue object
-		if fileNameRegexp.MatchString(fileInfo.Name()) || badFileNameRegexp.MatchString(fileInfo.Name()) {
+		if d.fileNameRegexp.MatchString(fileInfo.Name()) || d.badFileNameRegexp.MatchString(fileInfo.Name()) {
 			d.totalDiskSpaceUsed += fileInfo.Size()
 		}
 
