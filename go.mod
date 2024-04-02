@@ -1,3 +1,3 @@
-module github.com/kev1n80/go-diskqueue
+module github.com/vela-public/go-diskqueue
 
-go 1.13
+go 1.21
